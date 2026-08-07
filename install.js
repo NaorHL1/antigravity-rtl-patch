@@ -49,6 +49,7 @@ async function patch() {
                     body.ag-rtl-active h1, body.ag-rtl-active h2, body.ag-rtl-active h3, body.ag-rtl-active .markdown,
                     body.ag-rtl-active [class*="message"] { direction: rtl !important; text-align: right !important; }
                     body.ag-rtl-active pre, body.ag-rtl-active code, body.ag-rtl-active [class*="code"] { direction: ltr !important; text-align: left !important; }
+                    body.ag-rtl-active textarea, body.ag-rtl-active input, body.ag-rtl-active [contenteditable="true"], body.ag-rtl-active [class*="input"] { direction: initial !important; text-align: initial !important; }
                     #ag-rtl-toggle-btn { 
                         position: fixed; 
                         top: 5px; 
