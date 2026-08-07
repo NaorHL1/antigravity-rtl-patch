@@ -42,49 +42,128 @@ async function patch() {
     win.webContents.on('did-finish-load', () => {
         win.webContents.executeJavaScript(\`
             (function() {
-                if (document.getElementById('ag-rtl-toggle-btn')) return;
+                if (document.getElementById('ag-rtl-controls')) return;
+                
+                // 1. Inject CSS
                 const style = document.createElement('style');
                 style.innerHTML = \\\`
+                    /* Force RTL Styles */
                     body.ag-rtl-active p, body.ag-rtl-active ul, body.ag-rtl-active ol, body.ag-rtl-active li, 
                     body.ag-rtl-active h1, body.ag-rtl-active h2, body.ag-rtl-active h3, body.ag-rtl-active .markdown,
                     body.ag-rtl-active [class*="message"] { direction: rtl !important; text-align: right !important; }
                     body.ag-rtl-active pre, body.ag-rtl-active code, body.ag-rtl-active [class*="code"] { direction: ltr !important; text-align: left !important; }
-                    body.ag-rtl-active textarea, body.ag-rtl-active input, body.ag-rtl-active [contenteditable="true"], body.ag-rtl-active [class*="input"] { direction: initial !important; text-align: initial !important; }
-                    #ag-rtl-toggle-btn { 
-                        position: fixed; 
-                        top: 5px; 
-                        right: 200px; 
-                        z-index: 999999; 
-                        padding: 3px 8px; 
-                        background: transparent; 
-                        color: #888; 
-                        border: 1px solid #555; 
-                        border-radius: 4px; 
-                        cursor: pointer; 
-                        font-size: 12px; 
-                        font-family: sans-serif; 
-                        transition: all 0.2s; 
-                        opacity: 0.5;
+                    body.ag-rtl-active textarea, body.ag-rtl-active input, body.ag-rtl-active [contenteditable="true"], 
+                    body.ag-rtl-active [class*="input"], body.ag-rtl-active [class*="editor"], body.ag-rtl-active [class*="composer"], 
+                    body.ag-rtl-active .monaco-editor { direction: ltr !important; text-align: left !important; }
+                    
+                    /* Auto RTL Styles */
+                    body.ag-auto-rtl-active .ag-is-rtl { direction: rtl !important; text-align: right !important; }
+                    
+                    /* Code Comments Fix (always active if either mode is on) */
+                    body.ag-rtl-active pre code span[class*="comment"], body.ag-rtl-active pre code span[class*="string"],
+                    body.ag-auto-rtl-active pre code span[class*="comment"], body.ag-auto-rtl-active pre code span[class*="string"] {
+                        unicode-bidi: plaintext;
+                    }
+                    
+                    /* Controls Container */
+                    #ag-rtl-controls {
+                        position: fixed;
+                        top: 5px;
+                        right: 200px;
+                        z-index: 999999;
+                        display: flex;
+                        gap: 8px;
                         -webkit-app-region: no-drag;
                     }
-                    #ag-rtl-toggle-btn:hover { 
-                        opacity: 1; 
-                        background: rgba(128,128,128,0.2); 
+                    
+                    /* Button Styles */
+                    .ag-rtl-btn {
+                        padding: 3px 8px;
+                        background: transparent;
+                        color: #888;
+                        border: 1px solid #555;
+                        border-radius: 4px;
+                        cursor: pointer;
+                        font-size: 12px;
+                        font-family: sans-serif;
+                        transition: all 0.2s;
+                        opacity: 0.5;
                     }
-                    body.ag-rtl-active #ag-rtl-toggle-btn {
+                    .ag-rtl-btn:hover {
+                        opacity: 1;
+                        background: rgba(128,128,128,0.2);
+                    }
+                    .ag-rtl-btn.active {
+                        opacity: 1;
                         color: #28a745;
                         border-color: #28a745;
+                        background: rgba(40,167,69,0.1);
                     }
                 \\\`;
                 document.head.appendChild(style);
-                const btn = document.createElement('button');
-                btn.id = 'ag-rtl-toggle-btn';
-                btn.innerHTML = '⇄ RTL';
-                btn.addEventListener('click', () => {
-                    const isActive = document.body.classList.toggle('ag-rtl-active');
-                    btn.innerHTML = isActive ? '⇄ LTR' : '⇄ RTL';
+
+                // 2. Create Controls
+                const controls = document.createElement('div');
+                controls.id = 'ag-rtl-controls';
+                
+                const forceBtn = document.createElement('button');
+                forceBtn.className = 'ag-rtl-btn';
+                forceBtn.innerHTML = '⇄ Force RTL';
+                
+                const autoBtn = document.createElement('button');
+                autoBtn.className = 'ag-rtl-btn';
+                autoBtn.innerHTML = '✨ Auto RTL';
+                
+                controls.appendChild(forceBtn);
+                controls.appendChild(autoBtn);
+                document.body.appendChild(controls);
+
+                // 3. Auto RTL Logic
+                const applyAutoRtl = () => {
+                    const elements = document.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, .markdown');
+                    elements.forEach(el => {
+                        const text = el.textContent || '';
+                        const rtlChars = text.match(/[א-תء-يپچژگ]/g);
+                        const totalChars = text.replace(/\\s/g, '').length;
+                        
+                        if (totalChars > 0 && rtlChars && (rtlChars.length / totalChars > 0.15)) {
+                            el.classList.add('ag-is-rtl');
+                        } else {
+                            el.classList.remove('ag-is-rtl');
+                        }
+                    });
+                };
+
+                const observer = new MutationObserver((mutations) => {
+                    if (!document.body.classList.contains('ag-auto-rtl-active')) return;
+                    applyAutoRtl();
                 });
-                document.body.appendChild(btn);
+                
+                observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+                // 4. Button Events
+                forceBtn.addEventListener('click', () => {
+                    const isActive = document.body.classList.toggle('ag-rtl-active');
+                    forceBtn.classList.toggle('active', isActive);
+                    
+                    if (isActive) {
+                        document.body.classList.remove('ag-auto-rtl-active');
+                        autoBtn.classList.remove('active');
+                    }
+                });
+                
+                autoBtn.addEventListener('click', () => {
+                    const isActive = document.body.classList.toggle('ag-auto-rtl-active');
+                    autoBtn.classList.toggle('active', isActive);
+                    
+                    if (isActive) {
+                        document.body.classList.remove('ag-rtl-active');
+                        forceBtn.classList.remove('active');
+                        applyAutoRtl();
+                    } else {
+                        document.querySelectorAll('.ag-is-rtl').forEach(el => el.classList.remove('ag-is-rtl'));
+                    }
+                });
             })();
         \`).catch(err => console.error("RTL injection failed", err));
     });
