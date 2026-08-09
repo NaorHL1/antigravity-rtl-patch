@@ -7,68 +7,136 @@
 ---
 
 ## <a id="english"></a> 🇺🇸 English
-## ✨ Features
 
-- **Subtle UI Integration**: The controls are injected cleanly into the top title bar so they don't hide any chat text.
-- **✨ Auto RTL (Smart Detection)**: Automatically scans incoming messages. If a paragraph contains mostly Hebrew/Arabic/Persian, it perfectly aligns *only that specific paragraph* to the right, leaving English paragraphs aligned to the left!
-- **Code-Aware & Comment Fixing**: Code blocks are strictly protected (LTR). Even better, Hebrew comments inside the code (e.g., `// שלום`) are isolated and rendered perfectly without breaking the code syntax!
-- **Safe & Reversible**: Automatically creates a backup (`app.asar.backup`).
+### The Problem
+Antigravity 2.0 Desktop has no built-in RTL support. If you work in Hebrew, Arabic, or Persian, all text aligns to the left — making mixed-language responses nearly unreadable and breaking your workflow.
 
-## 📋 Requirements
+### The Solution
+This patcher injects smart RTL controls directly into the application's title bar.
 
-- Windows OS (Support for Mac/Linux coming soon!)
-- Antigravity 2.0 Desktop App
-- [Node.js](https://nodejs.org/) installed
+### ✨ Features
 
-## 🚀 How to Install
-1. **Clone/Download** this repository.
-2. Open a terminal in the folder and run: `npm install @electron/asar`
-3. Run the patch: `node install.js`
-4. **Restart Antigravity** (make sure to close it completely). You will now see the `⇄ Force RTL` and `✨ Auto RTL` buttons in the top right corner.
+- **Auto RTL** — Scans each paragraph individually. Hebrew/Arabic/Persian text aligns right; English text in the same response stays left-aligned.
+- **Code-Aware** — Code blocks remain strictly LTR. Hebrew comments inside code (e.g., `// בדיקה`) render correctly without breaking syntax.
+- **Force RTL** — A manual toggle to force the entire chat to RTL when needed.
+- **Safe & Reversible** — Creates an automatic backup before patching. Run the script again to re-apply cleanly.
 
-### 🌟 Planned Features / Roadmap
-- **Cross-Platform Support**: Mac and Linux automatic path detection.
-- **Keyboard Shortcuts**: Toggle RTL using a hotkey (e.g., `Ctrl+Shift+R`).
-- **Persistent State**: Remember your RTL preference across restarts automatically.
+### 📋 Requirements
+
+- Windows OS
+- [Antigravity 2.0](https://antigravity.dev/) Desktop App installed
+- [Node.js](https://nodejs.org/) (v16+)
+
+### 🚀 Installation
+
+#### Option A: Using Git
+```bash
+git clone https://github.com/NaorHL1/antigravity-rtl-patch.git
+cd antigravity-rtl-patch
+npm install
+node install.js
+```
+
+#### Option B: Manual Download
+1. Click the green **"<> Code"** button above → **"Download ZIP"**.
+2. Extract the ZIP and open a terminal in the extracted folder.
+3. Run:
+   ```bash
+   npm install
+   node install.js
+   ```
+
+#### After Installation
+Close Antigravity completely (including the system tray) and reopen it.  
+You will see two new buttons in the top-right corner: `⇄ Force RTL` and `✨ Auto RTL`.
+
+### 🔄 After Antigravity Updates
+When Antigravity updates, the patch is overwritten. Simply run `node install.js` again.
+
+### 🌟 Roadmap
+- Cross-platform support (Mac / Linux)
+- Keyboard shortcut toggle (`Ctrl+Shift+R`)
+- Persistent state across restarts
 
 ---
 
 ## <a id="hebrew"></a> 🇮🇱 עברית
-סקריפט זה מוסיף כפתורי שליטה לשורת הכותרת של התוכנה המחשבית Antigravity 2.0. 
-גולת הכותרת היא מנגנון ה-**✨ Auto RTL** - הוא מזהה אוטומטית פסקאות שנכתבו בעברית והופך *רק אותן* לימין לשמאל, בזמן שפסקאות באנגלית באותה ההודעה נשארות משמאל לימין! בנוסף, הוא מתקן אוטומטית הערות בעברית בתוך בלוקים של קוד כך שהן קריאות לחלוטין.
 
-### 🚀 איך להתקין
-1. הורד את הקבצים במאגר זה למחשב שלך.
-2. פתח חלון פקודות (Terminal או CMD) בתיקייה שבה שמרת את הקבצים והרץ:
-   `npm install @electron/asar`
-3. הרץ את סקריפט ההתקנה:
-   `node install.js`
-4. **הפעל מחדש את התוכנה** (סגור אותה לחלוטין ופתח מחדש). כעת יופיעו לך הכפתורים בפינה העליונה.
+### הבעיה
+ל-Antigravity 2.0 Desktop אין תמיכה מובנית ב-RTL. מי שעובד בעברית מקבל טקסט שמיושר לשמאל — מה שהופך קריאה של תגובות שמשלבות עברית, אנגלית וקוד לחוויה מתסכלת.
+
+### הפתרון
+פאץ' שמזריק כפתורי שליטה חכמים ישירות לשורת הכותרת של התוכנה.
+
+### ✨ יכולות
+- **Auto RTL** — מזהה אוטומטית פסקאות בעברית והופך רק אותן ל-RTL. פסקאות באנגלית באותה הודעה נשארות מיושרות לשמאל.
+- **הגנה על קוד** — בלוקים של קוד נשארים LTR. הערות בעברית בתוך הקוד מוצגות כראוי בלי לשבור תחביר.
+- **Force RTL** — מצב ידני שמאלץ RTL על כל הצ'אט.
+
+### 🚀 התקנה
+
+#### אפשרות א׳: דרך Git
+```bash
+git clone https://github.com/NaorHL1/antigravity-rtl-patch.git
+cd antigravity-rtl-patch
+npm install
+node install.js
+```
+
+#### אפשרות ב׳: הורדה ידנית
+1. לחצו על הכפתור הירוק **"<> Code"** למעלה → **"Download ZIP"**.
+2. חלצו את הקובץ ופתחו טרמינל בתיקייה.
+3. הריצו:
+   ```bash
+   npm install
+   node install.js
+   ```
+
+לאחר ההתקנה, סגרו את Antigravity לחלוטין (כולל מגש המערכת) ופתחו מחדש.
 
 ---
 
 ## <a id="arabic"></a> 🇸🇦 العربية
-يقوم هذا السكريبت بإضافة أزرار تحكم في شريط عنوان تطبيق Antigravity 2.0.
-يتميز بخاصية **✨ Auto RTL** التي تكتشف تلقائيًا الفقرات المكتوبة بالعربية وتقوم بمحاذاتها إلى اليمين، بينما تظل الفقرات الإنجليزية من اليسار إلى اليمين! كما يقوم بإصلاح التعليقات العربية داخل الأكواد البرمجية لتصبح مقروءة تمامًا.
 
-### 🚀 طريقة التثبيت
-1. قم بتنزيل ملفات هذا المستودع إلى جهازك.
-2. افتح سطر الأوامر (Terminal) في المجلد وقم بتشغيل:
-   `npm install @electron/asar`
-3. قم بتشغيل سكريبت التثبيت:
-   `node install.js`
-4. **أعد تشغيل التطبيق** (أغلقه تماماً ثم افتحه). ستظهر لك الأزرار في الزاوية العلوية.
+### المشكلة
+تطبيق Antigravity 2.0 لا يدعم الكتابة من اليمين إلى اليسار (RTL). النصوص العربية تظهر بمحاذاة يسارية مما يجعل القراءة صعبة.
+
+### الحل
+هذا السكريبت يضيف أزرار تحكم ذكية في شريط عنوان التطبيق.
+
+### 🚀 التثبيت
+```bash
+git clone https://github.com/NaorHL1/antigravity-rtl-patch.git
+cd antigravity-rtl-patch
+npm install
+node install.js
+```
+أو قم بتنزيل ZIP من الزر الأخضر **"<> Code"** أعلاه، واستخرجه، ثم شغّل الأوامر أعلاه في المجلد.
+
+أعد تشغيل التطبيق بعد التثبيت.
 
 ---
 
 ## <a id="persian"></a> 🇮🇷 فارسی
-این اسکریپت دکمه‌های کنترلی را به نوار عنوان برنامه دسکتاپ Antigravity 2.0 اضافه می‌کند.
-ویژگی برجسته آن **✨ Auto RTL** است که به طور خودکار پاراگراف‌های فارسی را تشخیص داده و آن‌ها را راست‌چین می‌کند، در حالی که پاراگراف‌های انگلیسی چپ‌چین باقی می‌مانند! همچنین نظرات فارسی داخل کدها را اصلاح می‌کند تا کاملاً خوانا باشند.
 
-### 🚀 نحوه نصب
-1. فایل‌های این مخزن را دانلود کنید.
-2. خط فرمان (Terminal) را در پوشه باز کرده و اجرا کنید:
-   `npm install @electron/asar`
-3. اسکریپت نصب را اجرا کنید:
-   `node install.js`
-4. **برنامه را مجدداً راه‌اندازی کنید** (کاملاً ببندید و دوباره باز کنید). اکنون دکمه‌ها را در گوشه بالا مشاهده خواهید کرد.
+### مشکل
+برنامه Antigravity 2.0 از راست‌چین (RTL) پشتیبانی نمی‌کند. متن‌های فارسی از چپ نمایش داده می‌شوند.
+
+### راه‌حل
+این اسکریپت دکمه‌های کنترل هوشمند را به نوار عنوان برنامه اضافه می‌کند.
+
+### 🚀 نصب
+```bash
+git clone https://github.com/NaorHL1/antigravity-rtl-patch.git
+cd antigravity-rtl-patch
+npm install
+node install.js
+```
+یا فایل ZIP را از دکمه سبز **"<> Code"** بالا دانلود کنید، استخراج کرده و دستورات بالا را اجرا کنید.
+
+پس از نصب، برنامه را کاملاً ببندید و دوباره باز کنید.
+
+---
+
+## 📄 License
+MIT — see [LICENSE](LICENSE).

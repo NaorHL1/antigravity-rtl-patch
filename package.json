@@ -1,0 +1,15 @@
+{
+  "name": "antigravity-rtl-patch",
+  "version": "1.0.0",
+  "description": "A native RTL injection patch for the Antigravity 2.0 Desktop Application",
+  "main": "install.js",
+  "scripts": {
+    "patch": "node install.js"
+  },
+  "keywords": ["antigravity", "rtl", "hebrew", "arabic", "persian", "electron", "patch"],
+  "author": "NaorHL1",
+  "license": "MIT",
+  "dependencies": {
+    "@electron/asar": "^3.2.0"
+  }
+}
