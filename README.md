@@ -140,3 +140,6 @@ node install.js
 
 ## 📄 License
 MIT — see [LICENSE](LICENSE).
+
+## ⚠️ Disclaimer
+*This is an unofficial community tool. Not affiliated with or endorsed by Antigravity. If the Antigravity team has any concerns, please [open an issue](https://github.com/NaorHL1/antigravity-rtl-patch/issues) and we will address them promptly.*
