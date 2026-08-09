@@ -18,19 +18,27 @@ async function patch() {
     }
 
     // 1. Smart backup: detect if Antigravity was updated since last patch
+    const PATCH_MARKER = 'ag-rtl-controls';
     if (fs.existsSync(BACKUP_PATH)) {
-        const currentSize = fs.statSync(ASAR_PATH).size;
-        const backupSize = fs.statSync(BACKUP_PATH).size;
-        const currentMtime = fs.statSync(ASAR_PATH).mtimeMs;
-        const backupMtime = fs.statSync(BACKUP_PATH).mtimeMs;
+        // Check if current app.asar contains our patch (meaning WE modified it, not an update)
+        let currentIsPatch = false;
+        try {
+            const tempCheck = path.join(__dirname, 'temp_check_rtl');
+            if (fs.existsSync(tempCheck)) fs.rmSync(tempCheck, { recursive: true, force: true });
+            asar.extractAll(ASAR_PATH, tempCheck);
+            const checkUtils = fs.readFileSync(path.join(tempCheck, 'dist', 'utils.js'), 'utf-8');
+            currentIsPatch = checkUtils.includes(PATCH_MARKER);
+            fs.rmSync(tempCheck, { recursive: true, force: true });
+        } catch(e) { /* if extraction fails, treat as not patched */ }
         
-        if (currentSize !== backupSize && currentMtime > backupMtime) {
-            // app.asar changed and is newer than backup = Antigravity updated
-            console.log('🔄 Antigravity update detected! Creating new backup...');
-            fs.copyFileSync(ASAR_PATH, BACKUP_PATH);
-        } else {
+        if (currentIsPatch) {
+            // Current file is our patched version — restore clean backup
             console.log('📦 Restoring fresh app.asar from backup...');
             fs.copyFileSync(BACKUP_PATH, ASAR_PATH);
+        } else {
+            // Current file is NOT patched but different from backup — Antigravity updated
+            console.log('🔄 Antigravity update detected! Creating new backup...');
+            fs.copyFileSync(ASAR_PATH, BACKUP_PATH);
         }
     } else {
         console.log('📦 Creating backup of app.asar...');
