@@ -17,10 +17,21 @@ async function patch() {
         process.exit(1);
     }
 
-    // 1. Restore from backup or create backup
+    // 1. Smart backup: detect if Antigravity was updated since last patch
     if (fs.existsSync(BACKUP_PATH)) {
-        console.log('📦 Restoring fresh app.asar from backup...');
-        fs.copyFileSync(BACKUP_PATH, ASAR_PATH);
+        const currentSize = fs.statSync(ASAR_PATH).size;
+        const backupSize = fs.statSync(BACKUP_PATH).size;
+        const currentMtime = fs.statSync(ASAR_PATH).mtimeMs;
+        const backupMtime = fs.statSync(BACKUP_PATH).mtimeMs;
+        
+        if (currentSize !== backupSize && currentMtime > backupMtime) {
+            // app.asar changed and is newer than backup = Antigravity updated
+            console.log('🔄 Antigravity update detected! Creating new backup...');
+            fs.copyFileSync(ASAR_PATH, BACKUP_PATH);
+        } else {
+            console.log('📦 Restoring fresh app.asar from backup...');
+            fs.copyFileSync(BACKUP_PATH, ASAR_PATH);
+        }
     } else {
         console.log('📦 Creating backup of app.asar...');
         fs.copyFileSync(ASAR_PATH, BACKUP_PATH);
