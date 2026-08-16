@@ -181,6 +181,12 @@ async function patch() {
                             document.querySelectorAll('.ag-is-rtl').forEach(el => el.classList.remove('ag-is-rtl'));
                         }
                     });
+
+                    // 5. Initialize Auto RTL by default
+                    document.body.classList.add('ag-auto-rtl-active');
+                    autoBtn.classList.add('active');
+                    // Wait a brief moment for content to load before initial apply
+                    setTimeout(applyAutoRtl, 500);
                 })();
             \`).catch(err => console.error("RTL injection failed", err));
         });
