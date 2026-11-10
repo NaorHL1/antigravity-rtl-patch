@@ -260,9 +260,40 @@ function buildInjectionCode(origOffset, origSize, origPayloadLen) {
                             body.ag-rtl-active .monaco-editor { direction: ltr !important; text-align: left !important; }
 
                             /* Auto RTL Styles */
-                            body.ag-auto-rtl-active .ag-is-rtl { direction: rtl !important; text-align: right !important; }
-                            body.ag-auto-rtl-active pre, body.ag-auto-rtl-active code, body.ag-auto-rtl-active [class*="code"],
-                            body.ag-auto-rtl-active .monaco-editor { direction: ltr !important; text-align: left !important; }
+                            body.ag-auto-rtl-active .ag-is-rtl {
+                                direction: rtl !important;
+                                text-align: right !important;
+                            }
+                            body.ag-auto-rtl-active ul:has(> li.ag-is-rtl),
+                            body.ag-auto-rtl-active ol:has(> li.ag-is-rtl),
+                            body.ag-auto-rtl-active .ag-is-rtl-list {
+                                direction: rtl !important;
+                                text-align: right !important;
+                            }
+                            body.ag-auto-rtl-active pre, body.ag-auto-rtl-active [class*="code-block"],
+                            body.ag-auto-rtl-active .monaco-editor {
+                                direction: ltr !important;
+                                text-align: left !important;
+                                unicode-bidi: isolate !important;
+                            }
+
+                            /* Inline BiDi Isolation (prevents inline code, flags, paths & punctuation from flipping in RTL sentences) */
+                            body.ag-rtl-active :not(pre) > code,
+                            body.ag-auto-rtl-active :not(pre) > code,
+                            body.ag-rtl-active kbd,
+                            body.ag-auto-rtl-active kbd,
+                            body.ag-rtl-active samp,
+                            body.ag-auto-rtl-active samp {
+                                direction: ltr !important;
+                                unicode-bidi: isolate !important;
+                                display: inline-block;
+                                text-align: left !important;
+                            }
+                            body.ag-rtl-active pre code,
+                            body.ag-auto-rtl-active pre code {
+                                direction: ltr !important;
+                                text-align: left !important;
+                            }
 
                             /* Code Comments Fix */
                             body.ag-rtl-active pre code span[class*="comment"], body.ag-rtl-active pre code span[class*="string"],
@@ -343,6 +374,9 @@ function buildInjectionCode(origOffset, origSize, origPayloadLen) {
                                 const isRtl = Boolean(rtlMatches && (rtlMatches.length / totalChars > 0.15));
                                 if (isRtl) {
                                     if (!el.classList.contains('ag-is-rtl')) el.classList.add('ag-is-rtl');
+                                    if (el.tagName === 'LI' && el.parentElement && (el.parentElement.tagName === 'UL' || el.parentElement.tagName === 'OL')) {
+                                        el.parentElement.classList.add('ag-is-rtl-list');
+                                    }
                                 } else {
                                     if (el.classList.contains('ag-is-rtl')) el.classList.remove('ag-is-rtl');
                                 }
