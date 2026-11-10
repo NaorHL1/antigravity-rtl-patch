@@ -2,6 +2,8 @@
 
 > **A native Right-to-Left (RTL) injection patch for the Antigravity 2.0 Desktop Application.**
 
+![RTL Controls](screenshot.png)
+
 [English](#english) | [עברית](#hebrew) | [العربية](#arabic) | [فارسی](#persian)
 
 ---
@@ -19,7 +21,8 @@ This patcher injects smart RTL controls directly into the application's title ba
 - **Auto RTL** — Scans each paragraph individually. Hebrew/Arabic/Persian text aligns right; English text in the same response stays left-aligned.
 - **Code-Aware** — Code blocks remain strictly LTR. Hebrew comments inside code (e.g., `// בדיקה`) render correctly without breaking syntax.
 - **Force RTL** — A manual toggle to force the entire chat to RTL when needed.
-- **Safe & Reversible** — Creates an automatic backup before patching. Run the script again to re-apply cleanly.
+- **Persistent State** — Remembers your preferred RTL mode (`Auto RTL`, `Force RTL`, or `Off`) across restarts (`Auto RTL` enabled by default).
+- **Zero-Shift Surgical Patching & Safe Restore** — Patches `dist/utils.js` directly in memory without unpacking or altering other file offsets, validates V8 syntax before writing, and stores versioned backups outside `resources/` so auto-updates stay clean. Run `node install.js --restore` anytime to restore the exact original archive.
 
 ### 📋 Requirements
 

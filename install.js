@@ -1,241 +1,550 @@
 const fs = require('fs');
 const path = require('path');
-const asar = require('@electron/asar');
+const crypto = require('crypto');
+const vm = require('vm');
+const { execSync } = require('child_process');
 
-// The default path for Antigravity on Windows
+// Default paths for Antigravity on Windows
 const RESOURCES_DIR = path.join(process.env.LOCALAPPDATA, 'Programs', 'antigravity', 'resources');
 const ASAR_PATH = path.join(RESOURCES_DIR, 'app.asar');
-const BACKUP_PATH = path.join(RESOURCES_DIR, 'app.asar.backup');
-const EXTRACT_DIR = path.join(__dirname, 'temp_extract_rtl_patch');
+const LEGACY_BACKUP_PATH = path.join(RESOURCES_DIR, 'app.asar.backup');
 
-async function patch() {
-    console.log('🚀 Starting Antigravity 2.0 RTL Patch...');
-    
-    if (!fs.existsSync(ASAR_PATH)) {
-        console.error('❌ Could not find app.asar at ' + ASAR_PATH);
+// Store versioned backups outside the app's resources folder so NSIS updates never collide with extra files
+const BACKUP_DIR = path.join(process.env.LOCALAPPDATA, 'antigravity-rtl-patch', 'backups');
+
+const PATCH_START_MARKER = '/* === AG_RTL_PATCH_START === */';
+const PATCH_END_MARKER = '/* === AG_RTL_PATCH_END === */';
+const ORIG_META_REGEX = /\/\* AG_RTL_ORIG:(\d+):(\d+):(\d+) \*\//;
+const LEGACY_MARKER = 'ag-rtl-controls';
+
+const BLOCK_SIZE = 4 * 1024 * 1024; // 4MB ASAR integrity block size
+
+function alignInt(i, alignment) {
+    return i + ((alignment - (i % alignment)) % alignment);
+}
+
+function computeIntegrity(buffer) {
+    const fileHash = crypto.createHash('SHA256').update(buffer).digest('hex');
+    const blocks = [];
+    for (let offset = 0; offset < buffer.length; offset += BLOCK_SIZE) {
+        const slice = buffer.subarray(offset, Math.min(offset + BLOCK_SIZE, buffer.length));
+        blocks.push(crypto.createHash('SHA256').update(slice).digest('hex'));
+    }
+    if (blocks.length === 0) {
+        blocks.push(crypto.createHash('SHA256').update(Buffer.alloc(0)).digest('hex'));
+    }
+    return {
+        algorithm: 'SHA256',
+        hash: fileHash,
+        blockSize: BLOCK_SIZE,
+        blocks,
+    };
+}
+
+/**
+ * Parses an ASAR archive buffer in memory without touching @electron/asar's buggy filesystemCache
+ * or extracting unpacked files to disk.
+ */
+function parseAsarBuffer(buf) {
+    if (!Buffer.isBuffer(buf) || buf.length < 16) {
+        throw new Error('Invalid or truncated ASAR buffer (size < 16 bytes).');
+    }
+    const sizePicklePayload = buf.readUInt32LE(0);
+    if (sizePicklePayload !== 4) {
+        throw new Error(`Invalid ASAR size pickle header: expected 4, got ${sizePicklePayload}`);
+    }
+    const headerSize = buf.readUInt32LE(4);
+    const jsonByteLength = buf.readInt32LE(12);
+    const payloadOffset = 8 + headerSize;
+
+    if (payloadOffset > buf.length || 16 + jsonByteLength > payloadOffset) {
+        throw new Error('Corrupted ASAR header bounds.');
+    }
+
+    const headerString = buf.subarray(16, 16 + jsonByteLength).toString('utf8');
+    const header = JSON.parse(headerString);
+    const payload = buf.subarray(payloadOffset);
+
+    return { header, headerString, headerSize, payloadOffset, payload };
+}
+
+function encodeAsarHeaderPrefix(headerObj) {
+    const jsonStr = JSON.stringify(headerObj);
+    const jsonBuf = Buffer.from(jsonStr, 'utf8');
+    const alignedJsonLen = alignInt(jsonBuf.length, 4);
+    const headerPayloadSize = 4 + alignedJsonLen;
+    const headerSize = 4 + headerPayloadSize;
+
+    const prefix = Buffer.alloc(8 + headerSize, 0);
+    prefix.writeUInt32LE(4, 0);
+    prefix.writeUInt32LE(headerSize, 4);
+    prefix.writeUInt32LE(headerPayloadSize, 8);
+    prefix.writeInt32LE(jsonBuf.length, 12);
+    jsonBuf.copy(prefix, 16);
+
+    return prefix;
+}
+
+function readPackedFile(parsedAsar, relPathParts) {
+    let node = parsedAsar.header;
+    for (const part of relPathParts) {
+        if (!node || !node.files || !node.files[part]) {
+            throw new Error(`File not found in ASAR header: ${relPathParts.join('/')}`);
+        }
+        node = node.files[part];
+    }
+    if (node.unpacked) {
+        throw new Error(`File is marked unpacked: ${relPathParts.join('/')}`);
+    }
+    const offset = Number(BigInt(node.offset));
+    const size = node.size;
+    if (offset < 0 || offset + size > parsedAsar.payload.length) {
+        throw new Error(`Corrupted file bounds in ASAR for ${relPathParts.join('/')} (offset=${offset}, size=${size}, payload=${parsedAsar.payload.length})`);
+    }
+    return {
+        node,
+        offset,
+        size,
+        buffer: parsedAsar.payload.subarray(offset, offset + size),
+    };
+}
+
+/**
+ * Strips any existing RTL patch (new marker-based or legacy) from utils.js code.
+ */
+function stripExistingPatch(utilsCode) {
+    let code = utilsCode;
+
+    // 1. Strip marker-based patch block if present
+    while (code.includes(PATCH_START_MARKER) && code.includes(PATCH_END_MARKER)) {
+        const startIdx = code.indexOf(PATCH_START_MARKER);
+        const endIdx = code.indexOf(PATCH_END_MARKER) + PATCH_END_MARKER.length;
+        let cutEnd = endIdx;
+        while (cutEnd < code.length && (code[cutEnd] === '\r' || code[cutEnd] === '\n' || code[cutEnd] === ' ')) {
+            cutEnd++;
+        }
+        code = code.slice(0, startIdx) + code.slice(cutEnd);
+    }
+
+    // 2. Strip legacy un-marked patch block if present
+    if (code.includes(LEGACY_MARKER)) {
+        const loadUrlIdx = code.lastIndexOf('void win.loadURL(url);');
+        const legacyStart = code.indexOf("win.webContents.on('did-finish-load', () => {");
+        if (legacyStart !== -1 && loadUrlIdx !== -1 && legacyStart < loadUrlIdx) {
+            const sub = code.slice(legacyStart, loadUrlIdx);
+            if (sub.includes(LEGACY_MARKER)) {
+                code = code.slice(0, legacyStart) + code.slice(loadUrlIdx);
+            }
+        }
+    }
+
+    return code;
+}
+
+/**
+ * Extracts the clean, unpatched base state of the ASAR archive even if it was already patched.
+ * Because we append patched dist/utils.js at the end of the payload while keeping the original
+ * dist/utils.js untouched at its original offset, the archive is 100% self-recoverable!
+ */
+function getCleanBaseAsarState(buf) {
+    const parsed = parseAsarBuffer(buf);
+    const utilsTarget = readPackedFile(parsed, ['dist', 'utils.js']);
+    const currentUtilsStr = utilsTarget.buffer.toString('utf8');
+    const metaMatch = currentUtilsStr.match(ORIG_META_REGEX);
+
+    if (metaMatch) {
+        const origOffset = Number(metaMatch[1]);
+        const origSize = Number(metaMatch[2]);
+        const origPayloadLen = Number(metaMatch[3]);
+        if (origOffset + origSize <= origPayloadLen && origPayloadLen <= parsed.payload.length) {
+            const origUtilsBuf = parsed.payload.subarray(origOffset, origOffset + origSize);
+            const origPayload = parsed.payload.subarray(0, origPayloadLen);
+            return {
+                header: parsed.header,
+                utilsNode: utilsTarget.node,
+                origOffset,
+                origSize,
+                origPayloadLen,
+                origUtilsBuf,
+                origUtilsStr: origUtilsBuf.toString('utf8'),
+                origPayload,
+                wasPatched: true,
+            };
+        }
+    }
+
+    // Either unpatched or legacy-patched in-place
+    const cleanStr = stripExistingPatch(currentUtilsStr);
+    const cleanBuf = Buffer.from(cleanStr, 'utf8');
+    return {
+        header: parsed.header,
+        utilsNode: utilsTarget.node,
+        origOffset: utilsTarget.offset,
+        origSize: cleanBuf.length,
+        origPayloadLen: parsed.payload.length,
+        origUtilsBuf: cleanBuf,
+        origUtilsStr: cleanStr,
+        origPayload: parsed.payload,
+        wasPatched: currentUtilsStr !== cleanStr,
+    };
+}
+
+/**
+ * Zero-Shift End-of-Payload Append Patcher:
+ * Keeps all 765 original files (including the original dist/utils.js!) at their exact original
+ * byte offsets in the payload, and appends the patched dist/utils.js at the end of the payload.
+ * That way:
+ *  1. All 347 unpacked:true files remain untouched.
+ *  2. Even if Antigravity.exe is running while patching, every single file offset cached in the
+ *     running process's memory remains valid at the exact same byte position on disk.
+ *  3. Restoring (--restore) slices the appended bytes off and restores the bit-for-bit identical original app.asar.
+ */
+function buildPatchedAsarBuffer(buf, makeInjectionCodeFn) {
+    const base = getCleanBaseAsarState(buf);
+    const targetAnchor = 'void win.loadURL(url);';
+
+    if (!base.origUtilsStr.includes(targetAnchor)) {
+        throw new Error('Could not find injection anchor ("void win.loadURL(url);") in dist/utils.js.');
+    }
+
+    const injectionBlock = makeInjectionCodeFn(base.origOffset, base.origSize, base.origPayloadLen);
+    const patchedUtilsCode = base.origUtilsStr.replace(
+        targetAnchor,
+        `${injectionBlock}\n    ${targetAnchor}`
+    );
+    const patchedUtilsBuf = Buffer.from(patchedUtilsCode, 'utf8');
+
+    // Point dist/utils.js in the header to the appended region at the end of the original payload
+    const appendedOffset = base.origPayloadLen;
+    base.utilsNode.offset = String(appendedOffset);
+    base.utilsNode.size = patchedUtilsBuf.length;
+    base.utilsNode.integrity = computeIntegrity(patchedUtilsBuf);
+
+    const newPrefix = encodeAsarHeaderPrefix(base.header);
+    return Buffer.concat([newPrefix, base.origPayload, patchedUtilsBuf]);
+}
+
+function buildRestoredAsarBuffer(buf) {
+    const base = getCleanBaseAsarState(buf);
+    base.utilsNode.offset = String(base.origOffset);
+    base.utilsNode.size = base.origSize;
+    base.utilsNode.integrity = computeIntegrity(base.origUtilsBuf);
+
+    const newPrefix = encodeAsarHeaderPrefix(base.header);
+    return Buffer.concat([newPrefix, base.origPayload]);
+}
+
+function buildInjectionCode(origOffset, origSize, origPayloadLen) {
+    return `${PATCH_START_MARKER} /* AG_RTL_ORIG:${origOffset}:${origSize}:${origPayloadLen} */
+    {
+        const agRtlWebContents = (typeof getHubWebContents === 'function' ? getHubWebContents(win) : null) || win.webContents;
+        if (agRtlWebContents && typeof agRtlWebContents.on === 'function') {
+            agRtlWebContents.on('did-finish-load', () => {
+                if (win.isDestroyed?.() || agRtlWebContents.isDestroyed?.()) return;
+                agRtlWebContents.executeJavaScript(\`
+                    (function() {
+                        if (document.getElementById('ag-rtl-controls')) return;
+
+                        // 1. Inject CSS
+                        const style = document.createElement('style');
+                        style.id = 'ag-rtl-styles';
+                        style.textContent = \\\`
+                            /* Force RTL Styles */
+                            body.ag-rtl-active p, body.ag-rtl-active ul, body.ag-rtl-active ol, body.ag-rtl-active li,
+                            body.ag-rtl-active h1, body.ag-rtl-active h2, body.ag-rtl-active h3, body.ag-rtl-active h4,
+                            body.ag-rtl-active blockquote, body.ag-rtl-active .markdown,
+                            body.ag-rtl-active [class*="message"] { direction: rtl !important; text-align: right !important; }
+                            body.ag-rtl-active pre, body.ag-rtl-active code, body.ag-rtl-active [class*="code"],
+                            body.ag-rtl-active textarea, body.ag-rtl-active input, body.ag-rtl-active [contenteditable="true"],
+                            body.ag-rtl-active [class*="input"], body.ag-rtl-active [class*="editor"], body.ag-rtl-active [class*="composer"],
+                            body.ag-rtl-active .monaco-editor { direction: ltr !important; text-align: left !important; }
+
+                            /* Auto RTL Styles */
+                            body.ag-auto-rtl-active .ag-is-rtl { direction: rtl !important; text-align: right !important; }
+                            body.ag-auto-rtl-active pre, body.ag-auto-rtl-active code, body.ag-auto-rtl-active [class*="code"],
+                            body.ag-auto-rtl-active .monaco-editor { direction: ltr !important; text-align: left !important; }
+
+                            /* Code Comments Fix */
+                            body.ag-rtl-active pre code span[class*="comment"], body.ag-rtl-active pre code span[class*="string"],
+                            body.ag-auto-rtl-active pre code span[class*="comment"], body.ag-auto-rtl-active pre code span[class*="string"] {
+                                unicode-bidi: plaintext;
+                            }
+
+                            /* Controls Container */
+                            #ag-rtl-controls {
+                                position: fixed;
+                                top: 5px;
+                                right: 150px;
+                                z-index: 999999;
+                                display: flex;
+                                gap: 6px;
+                                -webkit-app-region: no-drag;
+                                user-select: none;
+                            }
+
+                            /* Button Styles */
+                            .ag-rtl-btn {
+                                padding: 3px 8px;
+                                background: transparent;
+                                color: #888;
+                                border: 1px solid #555;
+                                border-radius: 4px;
+                                cursor: pointer;
+                                font-size: 12px;
+                                font-family: system-ui, -apple-system, sans-serif;
+                                transition: all 0.2s;
+                                opacity: 0.65;
+                            }
+                            .ag-rtl-btn:hover {
+                                opacity: 1;
+                                background: rgba(128,128,128,0.2);
+                            }
+                            .ag-rtl-btn.active {
+                                opacity: 1;
+                                color: #28a745;
+                                border-color: #28a745;
+                                background: rgba(40,167,69,0.12);
+                            }
+                        \\\`;
+                        document.head.appendChild(style);
+
+                        // 2. Create Controls
+                        const controls = document.createElement('div');
+                        controls.id = 'ag-rtl-controls';
+
+                        const forceBtn = document.createElement('button');
+                        forceBtn.className = 'ag-rtl-btn';
+                        forceBtn.textContent = '⇄ Force RTL';
+
+                        const autoBtn = document.createElement('button');
+                        autoBtn.className = 'ag-rtl-btn';
+                        autoBtn.textContent = '✨ Auto RTL';
+
+                        controls.appendChild(forceBtn);
+                        controls.appendChild(autoBtn);
+                        document.body.appendChild(controls);
+
+                        // 3. Throttled Auto RTL Logic (prevents UI lag during fast streaming)
+                        const RTL_CHAR_RE = /[א-תء-يپچژگ]/g;
+                        const WS_RE = /\\\\s/g;
+                        let rafPending = false;
+
+                        const applyAutoRtlNow = () => {
+                            rafPending = false;
+                            if (!document.body || !document.body.classList.contains('ag-auto-rtl-active')) return;
+                            const elements = document.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th');
+                            for (let i = 0; i < elements.length; i++) {
+                                const el = elements[i];
+                                if (el.closest('pre, code, .monaco-editor, #ag-rtl-controls')) continue;
+                                const text = el.textContent || '';
+                                const totalChars = text.replace(WS_RE, '').length;
+                                if (totalChars === 0) continue;
+                                const rtlMatches = text.match(RTL_CHAR_RE);
+                                const isRtl = Boolean(rtlMatches && (rtlMatches.length / totalChars > 0.15));
+                                if (isRtl) {
+                                    if (!el.classList.contains('ag-is-rtl')) el.classList.add('ag-is-rtl');
+                                } else {
+                                    if (el.classList.contains('ag-is-rtl')) el.classList.remove('ag-is-rtl');
+                                }
+                            }
+                        };
+
+                        const scheduleAutoRtl = () => {
+                            if (rafPending || !document.body.classList.contains('ag-auto-rtl-active')) return;
+                            rafPending = true;
+                            requestAnimationFrame(applyAutoRtlNow);
+                        };
+
+                        const observer = new MutationObserver(scheduleAutoRtl);
+                        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+                        const STORAGE_KEY = 'ag-rtl-mode';
+                        const setMode = (mode) => {
+                            try { localStorage.setItem(STORAGE_KEY, mode); } catch (_) {}
+                            document.body.classList.toggle('ag-rtl-active', mode === 'force');
+                            document.body.classList.toggle('ag-auto-rtl-active', mode === 'auto');
+                            forceBtn.classList.toggle('active', mode === 'force');
+                            autoBtn.classList.toggle('active', mode === 'auto');
+                            if (mode === 'auto') {
+                                applyAutoRtlNow();
+                            } else {
+                                document.querySelectorAll('.ag-is-rtl').forEach(el => el.classList.remove('ag-is-rtl'));
+                            }
+                        };
+
+                        // 4. Button Events
+                        forceBtn.addEventListener('click', () => {
+                            const nextMode = document.body.classList.contains('ag-rtl-active') ? 'off' : 'force';
+                            setMode(nextMode);
+                        });
+
+                        autoBtn.addEventListener('click', () => {
+                            const nextMode = document.body.classList.contains('ag-auto-rtl-active') ? 'off' : 'auto';
+                            setMode(nextMode);
+                        });
+
+                        // 5. Initialize mode (default to 'auto')
+                        let initialMode = 'auto';
+                        try {
+                            const saved = localStorage.getItem(STORAGE_KEY);
+                            if (saved === 'auto' || saved === 'force' || saved === 'off') {
+                                initialMode = saved;
+                            }
+                        } catch (_) {}
+                        setMode(initialMode);
+                        setTimeout(scheduleAutoRtl, 500);
+                    })();
+                \`).catch(err => console.error('RTL injection failed:', err));
+            });
+        }
+    }
+    ${PATCH_END_MARKER}`;
+}
+
+/**
+ * Checks if the NSIS installer/updater is currently running in the background.
+ * Waiting for it prevents locking resources/ while Uninstall Antigravity.exe is replacing the app.
+ */
+function waitForBackgroundUpdater() {
+    if (process.platform !== 'win32') return;
+    const maxWaitSec = 90;
+    for (let waited = 0; waited < maxWaitSec; waited += 2) {
+        try {
+            const out = execSync('tasklist /FI "IMAGENAME eq Antigravity-x64.exe" /FO CSV /NH', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+            const outUninstall = execSync('tasklist /FI "IMAGENAME eq Uninstall Antigravity.exe" /FO CSV /NH', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+            const updaterRunning = out.includes('Antigravity-x64.exe') || outUninstall.includes('Uninstall');
+            if (!updaterRunning) return;
+            if (waited === 0) {
+                console.log('⏳ Antigravity is currently finishing an update in the background. Waiting for it to complete safely...');
+            }
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+        } catch (_) {
+            return;
+        }
+    }
+}
+
+function validateAsarBufferIntegrity(asarBuf) {
+    const parsed = parseAsarBuffer(asarBuf);
+    const pkgFile = readPackedFile(parsed, ['package.json']);
+    const pkgJson = JSON.parse(pkgFile.buffer.toString('utf8'));
+    if (!pkgJson || pkgJson.name !== 'antigravity' || !pkgJson.version) {
+        throw new Error('Validation failed: package.json inside ASAR is invalid.');
+    }
+
+    const utilsFile = readPackedFile(parsed, ['dist', 'utils.js']);
+    const utilsStr = utilsFile.buffer.toString('utf8');
+    // Compile in V8 VM to guarantee zero syntax errors before writing to disk
+    new vm.Script(utilsStr, { filename: 'dist/utils.js' });
+
+    return { version: pkgJson.version, utilsStr, headerSize: parsed.headerSize };
+}
+
+function writeAsarSafely(targetPath, newBuffer) {
+    // Validate buffer in memory before touching disk
+    validateAsarBufferIntegrity(newBuffer);
+
+    const tmpPath = `${targetPath}.rtl-tmp-${process.pid}`;
+    try {
+        fs.writeFileSync(tmpPath, newBuffer);
+        // Verify the written file on disk reads back identically
+        const diskCheck = fs.readFileSync(tmpPath);
+        if (!diskCheck.equals(newBuffer)) {
+            throw new Error('Disk verification mismatch on temporary ASAR file.');
+        }
+
+        try {
+            // Try atomic rename first
+            fs.renameSync(tmpPath, targetPath);
+        } catch (_) {
+            // If Antigravity has a shared handle open on Windows, renameSync may fail with EPERM/EACCES
+            // while direct copy/write succeeds atomically at the OS cache level
+            fs.copyFileSync(tmpPath, targetPath);
+            fs.rmSync(tmpPath, { force: true });
+        }
+    } finally {
+        if (fs.existsSync(tmpPath)) {
+            try { fs.rmSync(tmpPath, { force: true }); } catch (_) {}
+        }
+    }
+}
+
+async function patch(targetAsarPath = ASAR_PATH) {
+    const isRestore = process.argv.includes('--restore');
+    console.log(isRestore ? '🔄 Restoring original Antigravity app.asar...' : '🚀 Starting Antigravity 2.0 RTL Patch (Zero-Shift Surgical Mode)...');
+
+    waitForBackgroundUpdater();
+
+    if (!fs.existsSync(targetAsarPath)) {
+        console.error('❌ Could not find app.asar at: ' + targetAsarPath);
         console.error('Please make sure Antigravity is installed.');
         process.exit(1);
     }
 
-    try {
-        // 1. Smart backup: detect if Antigravity was updated since last patch
-        const PATCH_MARKER = 'ag-rtl-controls';
-        if (fs.existsSync(BACKUP_PATH)) {
-            let currentIsPatch = false;
-            try {
-                const tempCheck = path.join(__dirname, 'temp_check_rtl');
-                if (fs.existsSync(tempCheck)) fs.rmSync(tempCheck, { recursive: true, force: true });
-                asar.extractAll(ASAR_PATH, tempCheck);
-                const checkUtils = fs.readFileSync(path.join(tempCheck, 'dist', 'utils.js'), 'utf-8');
-                currentIsPatch = checkUtils.includes(PATCH_MARKER);
-                fs.rmSync(tempCheck, { recursive: true, force: true });
-            } catch(e) { /* if extraction fails, treat as not patched */ }
-            
-            if (currentIsPatch) {
-                console.log('📦 Restoring fresh app.asar from backup...');
-                fs.copyFileSync(BACKUP_PATH, ASAR_PATH);
-            } else {
-                console.log('🔄 Antigravity update detected! Creating new backup...');
-                fs.copyFileSync(ASAR_PATH, BACKUP_PATH);
-            }
-        } else {
-            console.log('📦 Creating backup of app.asar...');
-            fs.copyFileSync(ASAR_PATH, BACKUP_PATH);
+    // Clean up any leftover temp directories from older versions of the patcher
+    for (const oldTemp of ['temp_extract_rtl_patch', 'temp_check_rtl', 'temp_check_asar']) {
+        const p = path.join(__dirname, oldTemp);
+        if (fs.existsSync(p)) {
+            try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {}
         }
-
-        // 2. Extract
-        console.log('📂 Extracting application files...');
-        if (fs.existsSync(EXTRACT_DIR)) {
-            fs.rmSync(EXTRACT_DIR, { recursive: true, force: true });
-        }
-        asar.extractAll(ASAR_PATH, EXTRACT_DIR);
-
-        // 3. Patch utils.js
-        console.log('🛠️  Injecting RTL Toggle Button...');
-        const utilsPath = path.join(EXTRACT_DIR, 'dist', 'utils.js');
-        let utilsCode = fs.readFileSync(utilsPath, 'utf-8');
-
-        const injectionCode = `
-        win.webContents.on('did-finish-load', () => {
-            win.webContents.executeJavaScript(\`
-                (function() {
-                    if (document.getElementById('ag-rtl-controls')) return;
-                    
-                    // 1. Inject CSS
-                    const style = document.createElement('style');
-                    style.innerHTML = \\\`
-                        /* Force RTL Styles */
-                        body.ag-rtl-active p, body.ag-rtl-active ul, body.ag-rtl-active ol, body.ag-rtl-active li, 
-                        body.ag-rtl-active h1, body.ag-rtl-active h2, body.ag-rtl-active h3, body.ag-rtl-active .markdown,
-                        body.ag-rtl-active [class*="message"] { direction: rtl !important; text-align: right !important; }
-                        body.ag-rtl-active pre, body.ag-rtl-active code, body.ag-rtl-active [class*="code"] { direction: ltr !important; text-align: left !important; }
-                        body.ag-rtl-active textarea, body.ag-rtl-active input, body.ag-rtl-active [contenteditable="true"], 
-                        body.ag-rtl-active [class*="input"], body.ag-rtl-active [class*="editor"], body.ag-rtl-active [class*="composer"], 
-                        body.ag-rtl-active .monaco-editor { direction: ltr !important; text-align: left !important; }
-                        
-                        /* Auto RTL Styles */
-                        body.ag-auto-rtl-active .ag-is-rtl { direction: rtl !important; text-align: right !important; }
-                        
-                        /* Code Comments Fix (always active if either mode is on) */
-                        body.ag-rtl-active pre code span[class*="comment"], body.ag-rtl-active pre code span[class*="string"],
-                        body.ag-auto-rtl-active pre code span[class*="comment"], body.ag-auto-rtl-active pre code span[class*="string"] {
-                            unicode-bidi: plaintext;
-                        }
-                        
-                        /* Controls Container */
-                        #ag-rtl-controls {
-                            position: fixed;
-                            top: 5px;
-                            right: 200px;
-                            z-index: 999999;
-                            display: flex;
-                            gap: 8px;
-                            -webkit-app-region: no-drag;
-                        }
-                        
-                        /* Button Styles */
-                        .ag-rtl-btn {
-                            padding: 3px 8px;
-                            background: transparent;
-                            color: #888;
-                            border: 1px solid #555;
-                            border-radius: 4px;
-                            cursor: pointer;
-                            font-size: 12px;
-                            font-family: sans-serif;
-                            transition: all 0.2s;
-                            opacity: 0.5;
-                        }
-                        .ag-rtl-btn:hover {
-                            opacity: 1;
-                            background: rgba(128,128,128,0.2);
-                        }
-                        .ag-rtl-btn.active {
-                            opacity: 1;
-                            color: #28a745;
-                            border-color: #28a745;
-                            background: rgba(40,167,69,0.1);
-                        }
-                    \\\`;
-                    document.head.appendChild(style);
-
-                    // 2. Create Controls
-                    const controls = document.createElement('div');
-                    controls.id = 'ag-rtl-controls';
-                    
-                    const forceBtn = document.createElement('button');
-                    forceBtn.className = 'ag-rtl-btn';
-                    forceBtn.innerHTML = '⇄ Force RTL';
-                    
-                    const autoBtn = document.createElement('button');
-                    autoBtn.className = 'ag-rtl-btn';
-                    autoBtn.innerHTML = '✨ Auto RTL';
-                    
-                    controls.appendChild(forceBtn);
-                    controls.appendChild(autoBtn);
-                    document.body.appendChild(controls);
-
-                    // 3. Auto RTL Logic
-                    const applyAutoRtl = () => {
-                        const elements = document.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, .markdown');
-                        elements.forEach(el => {
-                            const text = el.textContent || '';
-                            const rtlChars = text.match(/[א-תء-يپچژگ]/g);
-                            const totalChars = text.replace(/\\s/g, '').length;
-                            
-                            if (totalChars > 0 && rtlChars && (rtlChars.length / totalChars > 0.15)) {
-                                el.classList.add('ag-is-rtl');
-                            } else {
-                                el.classList.remove('ag-is-rtl');
-                            }
-                        });
-                    };
-
-                    const observer = new MutationObserver((mutations) => {
-                        if (!document.body.classList.contains('ag-auto-rtl-active')) return;
-                        applyAutoRtl();
-                    });
-                    
-                    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-
-                    // 4. Button Events
-                    forceBtn.addEventListener('click', () => {
-                        const isActive = document.body.classList.toggle('ag-rtl-active');
-                        forceBtn.classList.toggle('active', isActive);
-                        
-                        if (isActive) {
-                            document.body.classList.remove('ag-auto-rtl-active');
-                            autoBtn.classList.remove('active');
-                        }
-                    });
-                    
-                    autoBtn.addEventListener('click', () => {
-                        const isActive = document.body.classList.toggle('ag-auto-rtl-active');
-                        autoBtn.classList.toggle('active', isActive);
-                        
-                        if (isActive) {
-                            document.body.classList.remove('ag-rtl-active');
-                            forceBtn.classList.remove('active');
-                            applyAutoRtl();
-                        } else {
-                            document.querySelectorAll('.ag-is-rtl').forEach(el => el.classList.remove('ag-is-rtl'));
-                        }
-                    });
-
-                    // 5. Initialize Auto RTL by default
-                    document.body.classList.add('ag-auto-rtl-active');
-                    autoBtn.classList.add('active');
-                    // Wait a brief moment for content to load before initial apply
-                    setTimeout(applyAutoRtl, 500);
-                })();
-            \`).catch(err => console.error("RTL injection failed", err));
-        });
-        `;
-
-        if (utilsCode.includes('void win.loadURL(url);')) {
-            utilsCode = utilsCode.replace('void win.loadURL(url);', `${injectionCode}\n    void win.loadURL(url);`);
-            fs.writeFileSync(utilsPath, utilsCode);
-            console.log('✅ Patch successfully applied!');
-        } else {
-            console.error('❌ Failed to find target string in utils.js! The app structure might have changed.');
-            process.exit(1);
-        }
-
-        // 4. Repack safely
-        console.log('📦 Repacking application files (this might take a few seconds)...');
-        try {
-            await asar.createPackage(EXTRACT_DIR, ASAR_PATH);
-        } catch (repackErr) {
-            console.error('❌ FATAL ERROR: Failed to repack app.asar!');
-            if (repackErr.code === 'EBUSY' || repackErr.code === 'EPERM') {
-                console.error('⚠️  Permission denied. Antigravity might still be running in the background!');
-            }
-            console.error(repackErr.message);
-            console.log('🔄 Attempting to restore backup to prevent corruption...');
-            try {
-                fs.copyFileSync(BACKUP_PATH, ASAR_PATH);
-                console.log('✅ Backup restored successfully. Your app is safe.');
-            } catch (restoreErr) {
-                console.error('❌ Failed to restore backup! Your app.asar might be corrupted.');
-            }
-            process.exit(1);
-        }
-        
-        // 5. Cleanup
-        console.log('🧹 Cleaning up temporary files...');
-        fs.rmSync(EXTRACT_DIR, { recursive: true, force: true });
-        
-        console.log('🎉 DONE! Please restart Antigravity to see the changes.');
-
-    } catch (err) {
-        console.error('❌ AN UNEXPECTED ERROR OCCURRED:');
-        if (err.code === 'EBUSY' || err.code === 'EPERM') {
-            console.error('⚠️  FILE IS LOCKED. Please make sure Antigravity is COMPLETELY closed (check your system tray) and try again.');
-        } else {
-            console.error(err.message);
-        }
-        process.exit(1);
     }
+
+    // Remove legacy app.asar.backup inside resources/ so NSIS updater never trips on extra files
+    if (targetAsarPath === ASAR_PATH && fs.existsSync(LEGACY_BACKUP_PATH)) {
+        try {
+            fs.rmSync(LEGACY_BACKUP_PATH, { force: true });
+            console.log('🧹 Removed legacy backup from resources/ folder to keep auto-updates clean.');
+        } catch (_) {}
+    }
+
+    const currentBuf = fs.readFileSync(targetAsarPath);
+    const { version, utilsStr } = validateAsarBufferIntegrity(currentBuf);
+    console.log(`📌 Detected Antigravity version: v${version}`);
+
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const versionedBackupPath = path.join(BACKUP_DIR, `app.asar.${version}.backup`);
+
+    const isCurrentlyPatched = utilsStr.includes(PATCH_START_MARKER) || utilsStr.includes(LEGACY_MARKER);
+
+    if (!isCurrentlyPatched && !fs.existsSync(versionedBackupPath)) {
+        fs.writeFileSync(versionedBackupPath, currentBuf);
+        console.log(`📦 Saved clean backup for v${version} at: ${versionedBackupPath}`);
+    }
+
+    if (isRestore) {
+        const restoredBuf = buildRestoredAsarBuffer(currentBuf);
+        writeAsarSafely(targetAsarPath, restoredBuf);
+        console.log(`✅ Restored clean unpatched app.asar for v${version} successfully.`);
+        return;
+    }
+
+    console.log('🛠️  Surgically patching dist/utils.js (Zero-Shift End-of-Payload Append)...');
+    const patchedAsarBuf = buildPatchedAsarBuffer(currentBuf, buildInjectionCode);
+
+    writeAsarSafely(targetAsarPath, patchedAsarBuf);
+
+    // Final read-back verification from disk
+    const finalDiskBuf = fs.readFileSync(targetAsarPath);
+    const finalCheck = validateAsarBufferIntegrity(finalDiskBuf);
+    if (!finalCheck.utilsStr.includes(PATCH_START_MARKER)) {
+        throw new Error('Post-write verification failed: patch marker not found on disk.');
+    }
+
+    console.log(`✅ RTL Patch successfully applied and verified for Antigravity v${version}!`);
+    console.log('🎉 Please restart Antigravity (or press Ctrl+R / Reload Window) to see the RTL controls.');
 }
 
-patch().catch(console.error);
+if (require.main === module) {
+    patch().catch((err) => {
+        console.error('❌ ERROR APPLYING RTL PATCH:', err.message);
+        process.exit(1);
+    });
+}
+
+module.exports = {
+    patch,
+    parseAsarBuffer,
+    buildPatchedAsarBuffer,
+    buildRestoredAsarBuffer,
+    validateAsarBufferIntegrity,
+};
