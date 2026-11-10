@@ -24,7 +24,7 @@ function resolvePatchStateDir() {
 }
 
 /**
- * Returns candidate paths for Antigravity's app.asar across Windows, macOS, and Linux.
+ * Returns candidate paths for Antigravity Desktop's app.asar across Windows, macOS, and Linux.
  */
 function getCandidateAsarPaths() {
     const home = os.homedir();
@@ -52,7 +52,6 @@ function getCandidateAsarPaths() {
         candidates.push('/Applications/Antigravity.app/Contents/Resources/app.asar');
         candidates.push(path.join(home, 'Applications', 'Antigravity.app', 'Contents', 'Resources', 'app.asar'));
     } else {
-        // Linux standard install locations
         candidates.push('/opt/Antigravity/resources/app.asar');
         candidates.push('/opt/antigravity/resources/app.asar');
         candidates.push('/usr/lib/antigravity/resources/app.asar');
@@ -109,7 +108,7 @@ function computeIntegrity(buffer) {
 }
 
 /**
- * Parses an ASAR archive buffer in memory without touching @electron/asar's buggy filesystemCache
+ * Parses an ASAR archive buffer in memory without touching @electron/asar's filesystemCache
  * or extracting unpacked files to disk.
  */
 function parseAsarBuffer(buf) {
@@ -166,7 +165,7 @@ function readPackedFile(parsedAsar, relPathParts) {
     const offset = Number(BigInt(node.offset));
     const size = node.size;
     if (offset < 0 || offset + size > parsedAsar.payload.length) {
-        throw new Error(`Corrupted file bounds in ASAR for ${relPathParts.join('/')} (offset=${offset}, size=${size}, payload=${parsedAsar.payload.length})`);
+        throw new Error(`Corrupted file bounds in ASAR for ${relPathParts.join('/')}`);
     }
     return {
         node,
@@ -177,12 +176,11 @@ function readPackedFile(parsedAsar, relPathParts) {
 }
 
 /**
- * Strips any existing RTL patch (new marker-based or legacy) from utils.js code.
+ * Strips any existing RTL patch (new marker-based or legacy) from dist/utils.js code.
  */
 function stripExistingPatch(utilsCode) {
     let code = utilsCode;
 
-    // 1. Strip marker-based patch block if present
     while (code.includes(PATCH_START_MARKER) && code.includes(PATCH_END_MARKER)) {
         const startIdx = code.indexOf(PATCH_START_MARKER);
         const endIdx = code.indexOf(PATCH_END_MARKER) + PATCH_END_MARKER.length;
@@ -193,7 +191,6 @@ function stripExistingPatch(utilsCode) {
         code = code.slice(0, startIdx) + code.slice(cutEnd);
     }
 
-    // 2. Strip legacy un-marked patch block if present
     if (code.includes(LEGACY_MARKER)) {
         const loadUrlIdx = code.lastIndexOf('void win.loadURL(url);');
         const legacyStart = code.indexOf("win.webContents.on('did-finish-load', () => {");
@@ -210,8 +207,6 @@ function stripExistingPatch(utilsCode) {
 
 /**
  * Extracts the clean, unpatched base state of the ASAR archive even if it was already patched.
- * Because we append patched dist/utils.js at the end of the payload while keeping the original
- * dist/utils.js untouched at its original offset, the archive is 100% self-recoverable!
  */
 function getCleanBaseAsarState(buf) {
     const parsed = parseAsarBuffer(buf);
@@ -240,7 +235,6 @@ function getCleanBaseAsarState(buf) {
         }
     }
 
-    // Either unpatched or legacy-patched in-place
     const cleanStr = stripExistingPatch(currentUtilsStr);
     const cleanBuf = Buffer.from(cleanStr, 'utf8');
     return {
@@ -256,16 +250,6 @@ function getCleanBaseAsarState(buf) {
     };
 }
 
-/**
- * Zero-Shift End-of-Payload Append Patcher:
- * Keeps all 765 original files (including the original dist/utils.js!) at their exact original
- * byte offsets in the payload, and appends the patched dist/utils.js at the end of the payload.
- * That way:
- *  1. All 347 unpacked:true files remain untouched.
- *  2. Even if Antigravity.exe is running while patching, every single file offset cached in the
- *     running process's memory remains valid at the exact same byte position on disk.
- *  3. Restoring (--restore) slices the appended bytes off and restores the bit-for-bit identical original app.asar.
- */
 function buildPatchedAsarBuffer(buf, makeInjectionCodeFn) {
     const base = getCleanBaseAsarState(buf);
     const targetAnchor = 'void win.loadURL(url);';
@@ -281,7 +265,6 @@ function buildPatchedAsarBuffer(buf, makeInjectionCodeFn) {
     );
     const patchedUtilsBuf = Buffer.from(patchedUtilsCode, 'utf8');
 
-    // Point dist/utils.js in the header to the appended region at the end of the original payload
     const appendedOffset = base.origPayloadLen;
     base.utilsNode.offset = String(appendedOffset);
     base.utilsNode.size = patchedUtilsBuf.length;
@@ -456,7 +439,7 @@ function buildInjectionCode(origOffset, origSize, origPayloadLen) {
                         document.body.appendChild(controls);
 
                         // 3. Throttled Auto RTL Logic (prevents UI lag during fast streaming)
-                        const RTL_CHAR_RE = /[א-תء-يپچژگ]/g;
+                        const RTL_CHAR_RE = /[א-תء-يپچژג]/g;
                         const WS_RE = /\\\\s/g;
                         let rafPending = false;
 
@@ -544,10 +527,6 @@ function sleepMs(ms) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/**
- * Checks if the NSIS installer/updater is currently running in the background.
- * Waiting for it prevents locking resources/ while Uninstall Antigravity.exe is replacing the app.
- */
 function waitForBackgroundUpdater(quiet = false) {
     if (process.platform !== 'win32') return;
     const maxWaitSec = 180;
@@ -567,10 +546,6 @@ function waitForBackgroundUpdater(quiet = false) {
     }
 }
 
-/**
- * Registers the standalone auto-patcher outside the Antigravity directory so updates never overwrite it,
- * plus an OS-level logon/background trigger so the RTL patch survives every Antigravity update automatically.
- */
 function registerAutoPatchAgent(quiet = false) {
     try {
         fs.mkdirSync(STATE_DIR, { recursive: true });
@@ -579,7 +554,6 @@ function registerAutoPatchAgent(quiet = false) {
         fs.writeFileSync(NODE_PATH_FILE, process.execPath, 'utf8');
 
         if (process.platform === 'win32') {
-            // Silent VBScript launcher so scheduled runs never flash a console window
             const vbsContent = [
                 'Set WshShell = CreateObject("WScript.Shell")',
                 `WshShell.CurrentDirectory = "${os.tmpdir().replace(/"/g, '""')}"`,
@@ -633,7 +607,7 @@ X-GNOME-Autostart-enabled=true
         }
 
         if (!quiet) {
-            console.log('🛡️  Auto-Patch on Update enabled (survives future Antigravity updates automatically).');
+            console.log('🛡️  Auto-Patch on Update enabled (survives future Antigravity & extension updates automatically).');
         }
     } catch (err) {
         if (!quiet) {
@@ -678,31 +652,25 @@ function validateAsarBufferIntegrity(asarBuf) {
 
     const utilsFile = readPackedFile(parsed, ['dist', 'utils.js']);
     const utilsStr = utilsFile.buffer.toString('utf8');
-    // Compile in V8 VM to guarantee zero syntax errors before writing to disk
     new vm.Script(utilsStr, { filename: 'dist/utils.js' });
 
     return { version: pkgJson.version, utilsStr, headerSize: parsed.headerSize };
 }
 
 function writeAsarSafely(targetPath, newBuffer) {
-    // Validate buffer in memory before touching disk
     validateAsarBufferIntegrity(newBuffer);
 
     const tmpPath = `${targetPath}.rtl-tmp-${process.pid}`;
     try {
         fs.writeFileSync(tmpPath, newBuffer);
-        // Verify the written file on disk reads back identically
         const diskCheck = fs.readFileSync(tmpPath);
         if (!diskCheck.equals(newBuffer)) {
             throw new Error('Disk verification mismatch on temporary ASAR file.');
         }
 
         try {
-            // Try atomic rename first
             fs.renameSync(tmpPath, targetPath);
         } catch (_) {
-            // If Antigravity has a shared handle open on Windows, renameSync may fail with EPERM/EACCES
-            // while direct copy/write succeeds atomically at the OS cache level
             fs.copyFileSync(tmpPath, targetPath);
             fs.rmSync(tmpPath, { force: true });
         }
@@ -713,26 +681,481 @@ function writeAsarSafely(targetPath, newBuffer) {
     }
 }
 
+/* ==================== VS CODE EXTENSION SUPPORT ==================== */
+
+const VSCODE_PATCH_START = '/* === AG_RTL_VSCODE_PATCH_START === */';
+const VSCODE_PATCH_END = '/* === AG_RTL_VSCODE_PATCH_END === */';
+const HOOK_CALL_REGEX = /if\s*\(typeof global\.__agRtlTransformIframeUrl\s*===\s*['"]function['"]\)\s*\{\s*([a-zA-Z0-9_$]+)\s*=\s*global\.__agRtlTransformIframeUrl\(\1\);\s*\}/g;
+
+const VSCODE_INLINE_RTL_PAYLOAD = `
+<style id="ag-rtl-styles">
+  /* Force RTL Styles */
+  body.ag-rtl-active p, body.ag-rtl-active ul, body.ag-rtl-active ol, body.ag-rtl-active li,
+  body.ag-rtl-active h1, body.ag-rtl-active h2, body.ag-rtl-active h3, body.ag-rtl-active h4,
+  body.ag-rtl-active blockquote, body.ag-rtl-active .markdown,
+  body.ag-rtl-active [class*="message"] { direction: rtl !important; text-align: right !important; }
+  body.ag-rtl-active pre, body.ag-rtl-active code, body.ag-rtl-active [class*="code"],
+  body.ag-rtl-active textarea, body.ag-rtl-active input, body.ag-rtl-active [contenteditable="true"],
+  body.ag-rtl-active [class*="input"], body.ag-rtl-active [class*="editor"], body.ag-rtl-active [class*="composer"],
+  body.ag-rtl-active .monaco-editor { direction: ltr !important; text-align: left !important; }
+
+  /* Auto RTL Styles */
+  body.ag-auto-rtl-active .ag-is-rtl { direction: rtl !important; text-align: right !important; }
+  body.ag-auto-rtl-active ul:has(> li.ag-is-rtl),
+  body.ag-auto-rtl-active ol:has(> li.ag-is-rtl),
+  body.ag-auto-rtl-active .ag-is-rtl-list { direction: rtl !important; text-align: right !important; }
+  body.ag-auto-rtl-active pre, body.ag-auto-rtl-active [class*="code-block"],
+  body.ag-auto-rtl-active .monaco-editor { direction: ltr !important; text-align: left !important; unicode-bidi: isolate !important; }
+
+  /* Inline BiDi Isolation */
+  body.ag-rtl-active :not(pre) > code,
+  body.ag-auto-rtl-active :not(pre) > code,
+  body.ag-rtl-active kbd, body.ag-auto-rtl-active kbd,
+  body.ag-rtl-active samp, body.ag-auto-rtl-active samp {
+    direction: ltr !important; unicode-bidi: isolate !important; display: inline-block; text-align: left !important;
+  }
+  body.ag-rtl-active pre code, body.ag-auto-rtl-active pre code { direction: ltr !important; text-align: left !important; }
+
+  /* Code Comments Fix */
+  body.ag-rtl-active pre code span[class*="comment"], body.ag-rtl-active pre code span[class*="string"],
+  body.ag-auto-rtl-active pre code span[class*="comment"], body.ag-auto-rtl-active pre code span[class*="string"] {
+    unicode-bidi: plaintext;
+  }
+
+  /* Controls Container */
+  #ag-rtl-controls {
+    position: fixed; top: 6px; right: 8px; z-index: 999999; display: flex; gap: 4px; user-select: none;
+  }
+  .ag-rtl-btn {
+    padding: 2px 7px; background: rgba(30, 30, 30, 0.7); color: #aaa; border: 1px solid rgba(128, 128, 128, 0.4);
+    border-radius: 4px; cursor: pointer; font-size: 11px; font-family: system-ui, -apple-system, sans-serif;
+    transition: all 0.2s; backdrop-filter: blur(4px); opacity: 0.75;
+  }
+  .ag-rtl-btn:hover { opacity: 1; color: #fff; background: rgba(128, 128, 128, 0.3); }
+  .ag-rtl-btn.active { opacity: 1; color: #28a745; border-color: #28a745; background: rgba(40, 167, 69, 0.16); }
+</style>
+<script id="ag-rtl-script">
+(function() {
+  if (document.getElementById('ag-rtl-controls')) return;
+  function init() {
+    if (!document.body || document.getElementById('ag-rtl-controls')) return;
+    const c = document.createElement('div');
+    c.id = 'ag-rtl-controls';
+    const fb = document.createElement('button');
+    fb.className = 'ag-rtl-btn';
+    fb.textContent = '⇄ RTL';
+    fb.title = 'Force RTL (L/R toggle)';
+    const ab = document.createElement('button');
+    ab.className = 'ag-rtl-btn';
+    ab.textContent = '✨ Auto';
+    ab.title = 'Auto RTL (Hebrew/Arabic detection)';
+    c.appendChild(fb); c.appendChild(ab);
+    document.body.appendChild(c);
+
+    const RTL_RE = /[א-תء-يپچژג]/g;
+    const WS_RE = /\\s/g;
+    let pending = false;
+    const apply = () => {
+      pending = false;
+      if (!document.body || !document.body.classList.contains('ag-auto-rtl-active')) return;
+      const els = document.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th');
+      for (let i = 0; i < els.length; i++) {
+        const el = els[i];
+        if (el.closest('pre, code, .monaco-editor, #ag-rtl-controls')) continue;
+        const txt = el.textContent || '';
+        const total = txt.replace(WS_RE, '').length;
+        if (total === 0) continue;
+        const matches = txt.match(RTL_RE);
+        const isRtl = Boolean(matches && (matches.length / total > 0.15));
+        if (isRtl) {
+          if (!el.classList.contains('ag-is-rtl')) el.classList.add('ag-is-rtl');
+          if (el.tagName === 'LI' && el.parentElement && (el.parentElement.tagName === 'UL' || el.parentElement.tagName === 'OL')) {
+            el.parentElement.classList.add('ag-is-rtl-list');
+          }
+        } else {
+          if (el.classList.contains('ag-is-rtl')) el.classList.remove('ag-is-rtl');
+        }
+      }
+    };
+    const schedule = () => {
+      if (pending || !document.body.classList.contains('ag-auto-rtl-active')) return;
+      pending = true;
+      requestAnimationFrame(apply);
+    };
+    const observer = new MutationObserver(schedule);
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    const KEY = 'ag-rtl-mode';
+    const setMode = (m) => {
+      try { localStorage.setItem(KEY, m); } catch (_) {}
+      document.body.classList.toggle('ag-rtl-active', m === 'force');
+      document.body.classList.toggle('ag-auto-rtl-active', m === 'auto');
+      fb.classList.toggle('active', m === 'force');
+      ab.classList.toggle('active', m === 'auto');
+      if (m === 'auto') apply();
+      else document.querySelectorAll('.ag-is-rtl').forEach(e => e.classList.remove('ag-is-rtl'));
+    };
+    fb.addEventListener('click', () => setMode(document.body.classList.contains('ag-rtl-active') ? 'off' : 'force'));
+    ab.addEventListener('click', () => setMode(document.body.classList.contains('ag-auto-rtl-active') ? 'off' : 'auto'));
+
+    let initMode = 'auto';
+    try {
+      const s = localStorage.getItem(KEY);
+      if (s === 'auto' || s === 'force' || s === 'off') initMode = s;
+    } catch (_) {}
+    setMode(initMode);
+    setTimeout(schedule, 500);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+`;
+
+function getVscodeExtensionsDirs() {
+    const home = os.homedir();
+    return [
+        path.join(home, '.vscode', 'extensions'),
+        path.join(home, '.vscode-insiders', 'extensions'),
+        path.join(home, '.cursor', 'extensions'),
+    ];
+}
+
+function findInstalledVscodeExtensions(customPath = null) {
+    const results = [];
+    const seenDirs = new Set();
+
+    if (customPath) {
+        const resolved = path.resolve(customPath);
+        if (fs.existsSync(resolved)) {
+            const stat = fs.statSync(resolved);
+            if (stat.isDirectory()) {
+                const extJs = path.join(resolved, 'extension.js');
+                const pkgJson = path.join(resolved, 'package.json');
+                if (fs.existsSync(extJs)) {
+                    let version = 'unknown';
+                    try {
+                        if (fs.existsSync(pkgJson)) {
+                            version = JSON.parse(fs.readFileSync(pkgJson, 'utf8')).version || 'unknown';
+                        }
+                    } catch (_) {}
+                    seenDirs.add(resolved.toLowerCase());
+                    results.push({ dir: resolved, extensionJs: extJs, version });
+                }
+            } else if (stat.isFile() && resolved.endsWith('.js')) {
+                const parentDir = path.dirname(resolved);
+                seenDirs.add(parentDir.toLowerCase());
+                results.push({ dir: parentDir, extensionJs: resolved, version: 'custom' });
+            }
+        }
+    }
+
+    for (const baseDir of getVscodeExtensionsDirs()) {
+        if (!fs.existsSync(baseDir)) continue;
+        try {
+            const entries = fs.readdirSync(baseDir);
+            for (const entry of entries) {
+                if (entry.toLowerCase().startsWith('google.google-antigravity')) {
+                    const fullPath = path.join(baseDir, entry);
+                    if (seenDirs.has(fullPath.toLowerCase())) continue;
+                    seenDirs.add(fullPath.toLowerCase());
+
+                    const extJs = path.join(fullPath, 'extension.js');
+                    const pkgJson = path.join(fullPath, 'package.json');
+                    if (fs.existsSync(extJs)) {
+                        let version = 'unknown';
+                        try {
+                            if (fs.existsSync(pkgJson)) {
+                                version = JSON.parse(fs.readFileSync(pkgJson, 'utf8')).version || 'unknown';
+                            }
+                        } catch (_) {}
+                        results.push({ dir: fullPath, extensionJs: extJs, version });
+                    }
+                }
+            }
+        } catch (_) {}
+    }
+
+    return results;
+}
+
+function buildVscodeInjectionModule() {
+    return `${VSCODE_PATCH_START}
+(function() {
+    if (global.__agRtlVscodeProxyStarted) return;
+    global.__agRtlVscodeProxyStarted = true;
+
+    const http = require('http');
+    const net = require('net');
+
+    const RTL_PAYLOAD = ${JSON.stringify(VSCODE_INLINE_RTL_PAYLOAD)};
+    let proxyPort = 0;
+    let lastTargetPort = 0;
+
+    function getTargetPortFromReq(req) {
+        try {
+            const u = new URL(req.url, 'http://127.0.0.1');
+            const p = u.searchParams.get('__ag_rtl_port');
+            if (p) {
+                const portNum = parseInt(p, 10);
+                if (!isNaN(portNum) && portNum > 0) {
+                    lastTargetPort = portNum;
+                    return portNum;
+                }
+            }
+        } catch (_) {}
+
+        const ref = req.headers && req.headers['referer'];
+        if (ref) {
+            try {
+                const refUrl = new URL(ref);
+                const p = refUrl.searchParams.get('__ag_rtl_port');
+                if (p) {
+                    const portNum = parseInt(p, 10);
+                    if (!isNaN(portNum) && portNum > 0) return portNum;
+                }
+            } catch (_) {}
+        }
+        return lastTargetPort;
+    }
+
+    const server = http.createServer((req, res) => {
+        const tp = getTargetPortFromReq(req);
+        if (!tp) {
+            res.writeHead(502);
+            return res.end('Antigravity RTL: Target port unknown');
+        }
+
+        let targetPath = req.url;
+        try {
+            const u = new URL(req.url, 'http://127.0.0.1');
+            u.searchParams.delete('__ag_rtl_port');
+            targetPath = u.pathname + u.search;
+        } catch (_) {}
+
+        const isHtml = targetPath === '/' || targetPath.startsWith('/?');
+        const headers = { ...req.headers, host: '127.0.0.1:' + tp };
+        if (isHtml) delete headers['accept-encoding'];
+
+        const proxyReq = http.request({
+            hostname: '127.0.0.1',
+            port: tp,
+            path: targetPath,
+            method: req.method,
+            headers,
+        }, (targetRes) => {
+            const cType = targetRes.headers['content-type'] || '';
+            if (isHtml && cType.includes('text/html')) {
+                let body = '';
+                targetRes.setEncoding('utf8');
+                targetRes.on('data', c => { body += c; });
+                targetRes.on('end', () => {
+                    const modified = body.replace('</head>', RTL_PAYLOAD + '\\n</head>');
+                    const resHeaders = { ...targetRes.headers };
+                    delete resHeaders['content-length'];
+                    delete resHeaders['content-encoding'];
+                    resHeaders['content-type'] = 'text/html; charset=utf-8';
+                    res.writeHead(targetRes.statusCode, resHeaders);
+                    res.end(modified);
+                });
+            } else {
+                res.writeHead(targetRes.statusCode, targetRes.headers);
+                targetRes.pipe(res);
+            }
+        });
+
+        proxyReq.on('error', (err) => {
+            if (!res.headersSent) {
+                res.writeHead(502);
+                res.end('Antigravity RTL Proxy error: ' + err.message);
+            }
+        });
+
+        req.pipe(proxyReq);
+    });
+
+    server.on('upgrade', (req, clientSocket, head) => {
+        const tp = getTargetPortFromReq(req);
+        if (!tp) return clientSocket.destroy();
+
+        let cleanPath = req.url;
+        try {
+            const u = new URL(req.url, 'http://127.0.0.1');
+            u.searchParams.delete('__ag_rtl_port');
+            cleanPath = u.pathname + u.search;
+        } catch (_) {}
+
+        const targetSocket = net.connect(tp, '127.0.0.1', () => {
+            targetSocket.write(req.method + ' ' + cleanPath + ' HTTP/' + req.httpVersion + '\\r\\n');
+            for (const [k, v] of Object.entries(req.headers)) {
+                if (k.toLowerCase() === 'host') targetSocket.write('host: 127.0.0.1:' + tp + '\\r\\n');
+                else if (Array.isArray(v)) {
+                    for (const item of v) targetSocket.write(k + ': ' + item + '\\r\\n');
+                } else {
+                    targetSocket.write(k + ': ' + v + '\\r\\n');
+                }
+            }
+            targetSocket.write('\\r\\n');
+            if (head && head.length > 0) targetSocket.write(head);
+            targetSocket.pipe(clientSocket);
+            clientSocket.pipe(targetSocket);
+        });
+
+        targetSocket.on('error', () => { try { clientSocket.destroy(); } catch (_) {} });
+        clientSocket.on('error', () => { try { targetSocket.destroy(); } catch (_) {} });
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+        proxyPort = server.address().port;
+    });
+    server.unref();
+
+    global.__agRtlTransformIframeUrl = function(origUrl) {
+        if (!origUrl || typeof origUrl !== 'string' || !proxyPort) return origUrl;
+        try {
+            const parsed = new URL(origUrl);
+            if ((parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost') && parsed.port) {
+                const targetPort = parseInt(parsed.port, 10);
+                if (targetPort && targetPort !== proxyPort) {
+                    lastTargetPort = targetPort;
+                    parsed.port = String(proxyPort);
+                    parsed.searchParams.set('__ag_rtl_port', String(targetPort));
+                    return parsed.toString();
+                }
+            }
+        } catch (_) {}
+        return origUrl;
+    };
+})();
+${VSCODE_PATCH_END}`;
+}
+
+function stripVscodePatch(code) {
+    let clean = code;
+    while (clean.includes(VSCODE_PATCH_START) && clean.includes(VSCODE_PATCH_END)) {
+        const s = clean.indexOf(VSCODE_PATCH_START);
+        let e = clean.indexOf(VSCODE_PATCH_END) + VSCODE_PATCH_END.length;
+        while (e < clean.length && (clean[e] === '\r' || clean[e] === '\n')) {
+            e++;
+        }
+        clean = clean.slice(0, s) + clean.slice(e);
+    }
+    clean = clean.replace(HOOK_CALL_REGEX, '');
+    return clean;
+}
+
+function patchVscodeExtensionCode(code) {
+    const clean = stripVscodePatch(code);
+    const targetAnchor = /renderWebviewHtml\s*\(\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*,\s*([a-zA-Z0-9_$]+)\s*\)\s*\{/;
+    const match = clean.match(targetAnchor);
+    if (!match) {
+        throw new Error('Could not find renderWebviewHtml anchor in extension.js');
+    }
+
+    const [fullAnchor, a, b, c, d] = match;
+    const hookedAnchor = `${fullAnchor}if(typeof global.__agRtlTransformIframeUrl==='function'){${c}=global.__agRtlTransformIframeUrl(${c});}`;
+    const withHook = clean.replace(fullAnchor, hookedAnchor);
+    const injectionModule = buildVscodeInjectionModule();
+    return `${injectionModule}\n${withHook}`;
+}
+
+function writeVscodeExtensionSafely(targetPath, newCode) {
+    new vm.Script(newCode, { filename: targetPath });
+
+    const tmpPath = `${targetPath}.rtl-tmp-${process.pid}`;
+    try {
+        fs.writeFileSync(tmpPath, newCode, 'utf8');
+        try {
+            fs.renameSync(tmpPath, targetPath);
+        } catch (_) {
+            fs.copyFileSync(tmpPath, targetPath);
+            fs.rmSync(tmpPath, { force: true });
+        }
+    } finally {
+        if (fs.existsSync(tmpPath)) {
+            try { fs.rmSync(tmpPath, { force: true }); } catch (_) {}
+        }
+    }
+}
+
+function patchVscodeExtension(extInfo, quiet = false) {
+    const currentCode = fs.readFileSync(extInfo.extensionJs, 'utf8');
+    const isCurrentlyPatched = currentCode.includes(VSCODE_PATCH_START);
+
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const versionedBackupPath = path.join(BACKUP_DIR, `extension.js.${extInfo.version}.backup`);
+
+    if (!isCurrentlyPatched && !fs.existsSync(versionedBackupPath)) {
+        fs.writeFileSync(versionedBackupPath, currentCode, 'utf8');
+        if (!quiet) {
+            console.log(`📦 Saved clean backup for VS Code extension v${extInfo.version} at: ${versionedBackupPath}`);
+        }
+    }
+
+    if (!quiet) {
+        console.log(`🛠️  Patching Google Antigravity VS Code extension v${extInfo.version}...`);
+    }
+
+    const patchedCode = patchVscodeExtensionCode(currentCode);
+    writeVscodeExtensionSafely(extInfo.extensionJs, patchedCode);
+
+    const checkCode = fs.readFileSync(extInfo.extensionJs, 'utf8');
+    if (!checkCode.includes(VSCODE_PATCH_START)) {
+        throw new Error('Verification failed: VS Code patch marker missing after write.');
+    }
+
+    if (!quiet) {
+        console.log(`✅ Google Antigravity VS Code extension v${extInfo.version} successfully patched!`);
+    }
+}
+
+function restoreVscodeExtension(extInfo, quiet = false) {
+    const currentCode = fs.readFileSync(extInfo.extensionJs, 'utf8');
+    const isCurrentlyPatched = currentCode.includes(VSCODE_PATCH_START);
+
+    if (!isCurrentlyPatched) {
+        if (!quiet) {
+            console.log(`ℹ️  VS Code extension v${extInfo.version} is not patched.`);
+        }
+        return;
+    }
+
+    const restoredCode = stripVscodePatch(currentCode);
+    writeVscodeExtensionSafely(extInfo.extensionJs, restoredCode);
+
+    if (!quiet) {
+        console.log(`✅ Restored clean unpatched VS Code extension v${extInfo.version} successfully.`);
+    }
+}
+
+/* ==================== CLI & ORCHESTRATION ==================== */
+
 function printHelp() {
     console.log(`
-Antigravity 2.0 RTL Patcher (v2.0.0)
-Zero-shift surgical Right-to-Left (RTL) support for Antigravity Desktop.
+Antigravity 2.0 RTL Patcher (v2.1.0)
+Zero-shift surgical Right-to-Left (RTL) support for Antigravity Desktop & VS Code Extension.
 
 Usage:
   npx github:NaorHL1/antigravity-rtl-patch [options]
   npx antigravity-rtl-patch [options]
   node install.js [options]
 
+Targets:
+  (default)              Patch both Antigravity Desktop and VS Code extension (if found)
+  --desktop              Patch only the Antigravity Desktop application
+  --vscode               Patch only the Google Antigravity VS Code extension
+
 Options:
-  --restore              Restore original unpatched app.asar & remove auto-patcher
-  --status               Check current Antigravity version, RTL patch & Auto-Patch status
+  --restore              Restore original unpatched state & remove auto-patcher
+  --status               Check version, RTL patch & Auto-Patch status for all targets
   --no-auto-patch        Apply RTL patch once without registering the update auto-patcher
-  --asar-path <path>     Specify custom path to resources/app.asar
+  --asar-path <path>     Specify custom path to Antigravity resources/app.asar
+  --vscode-path <path>   Specify custom path to VS Code extension folder or extension.js
   --help, -h             Show this help message
 `);
 }
 
-async function patch(targetAsarPath = ASAR_PATH) {
+async function patch() {
     if (process.argv.includes('--help') || process.argv.includes('-h')) {
         printHelp();
         return;
@@ -745,47 +1168,75 @@ async function patch(targetAsarPath = ASAR_PATH) {
     const isRestore = process.argv.includes('--restore');
     const noAutoPatch = process.argv.includes('--no-auto-patch');
 
-    // Never hold a working directory lock inside Antigravity when running as background auto-patcher
+    const vscodeOnly = process.argv.includes('--vscode') || process.argv.includes('--vscode-only');
+    const desktopOnly = process.argv.includes('--desktop') || process.argv.includes('--desktop-only');
+
+    const shouldHandleDesktop = !vscodeOnly;
+    const shouldHandleVscode = !desktopOnly;
+
+    // Custom paths
+    const customAsarFlag = process.argv.indexOf('--asar-path');
+    const customAsarPath = customAsarFlag !== -1 && process.argv[customAsarFlag + 1] ? path.resolve(process.argv[customAsarFlag + 1]) : null;
+    const targetAsarPath = customAsarPath || ASAR_PATH;
+
+    const customVscodeFlag = process.argv.indexOf('--vscode-path');
+    const customVscodePath = customVscodeFlag !== -1 && process.argv[customVscodeFlag + 1] ? path.resolve(process.argv[customVscodeFlag + 1]) : null;
+
+    const vscodeExtensions = shouldHandleVscode ? findInstalledVscodeExtensions(customVscodePath) : [];
+
     if (isWaitForUpdate || isAutoCheck) {
         try { process.chdir(os.tmpdir()); } catch (_) {}
     }
 
     if (isWaitForUpdate) {
-        // Give the OS/NSIS updater time to start after Antigravity quits, then wait until it exits completely
         sleepMs(10000);
         waitForBackgroundUpdater(true);
         sleepMs(5000);
-    } else if (!isStatus) {
-        if (!isQuiet) {
-            console.log(isRestore ? '🔄 Restoring original Antigravity app.asar...' : '🚀 Starting Antigravity 2.0 RTL Patch (Zero-Shift Surgical Mode)...');
-        }
+    } else if (!isStatus && shouldHandleDesktop && fs.existsSync(targetAsarPath)) {
         waitForBackgroundUpdater(isQuiet);
     }
 
-    if (!fs.existsSync(targetAsarPath)) {
-        if (!isQuiet) {
-            console.error('❌ Could not find app.asar at: ' + targetAsarPath);
-            console.error('Searched candidate paths for ' + process.platform + ':');
-            for (const c of getCandidateAsarPaths()) {
-                console.error('  - ' + c);
-            }
-            console.error('Tip: Pass a custom path via: node install.js --asar-path "/path/to/resources/app.asar"');
+    // Status Mode
+    if (isStatus) {
+        console.log('\n============================================================');
+        console.log(' Antigravity RTL Patcher Status (v2.1.0)');
+        console.log('============================================================');
+
+        if (fs.existsSync(targetAsarPath)) {
+            const buf = fs.readFileSync(targetAsarPath);
+            const { version, utilsStr } = validateAsarBufferIntegrity(buf);
+            const isPatched = utilsStr.includes(PATCH_START_MARKER) || utilsStr.includes(LEGACY_MARKER);
+            const backupFile = path.join(BACKUP_DIR, `app.asar.${version}.backup`);
+            console.log('🖥️  Desktop App (Antigravity):');
+            console.log(`   📌 Version             : v${version}`);
+            console.log(`   📂 ASAR Path           : ${targetAsarPath}`);
+            console.log(`   ✨ RTL Patch Status    : ${isPatched ? 'INSTALLED ✅' : 'NOT INSTALLED ❌'}`);
+            console.log(`   🛡️  Auto-Patch on Update: ${isAutoPatchRegistered() ? 'ENABLED ✅' : 'DISABLED ❌'}`);
+            console.log(`   📦 Backup Available    : ${fs.existsSync(backupFile) ? 'YES (' + backupFile + ')' : 'Self-embedded inside ASAR'}`);
+        } else {
+            console.log('🖥️  Desktop App (Antigravity): NOT FOUND ❌');
         }
-        process.exit(isQuiet ? 0 : 1);
-    }
 
-    // If running as background auto-check, don't touch app.asar if it was modified in the last 15 seconds (update still settling)
-    if (isAutoCheck || isWaitForUpdate) {
-        try {
-            const stat = fs.statSync(targetAsarPath);
-            if (Date.now() - stat.mtimeMs < 15000) {
-                sleepMs(15000);
-                waitForBackgroundUpdater(true);
+        console.log('');
+        if (vscodeExtensions.length > 0) {
+            console.log('💻 VS Code Extension (Google Antigravity):');
+            for (const ext of vscodeExtensions) {
+                const code = fs.readFileSync(ext.extensionJs, 'utf8');
+                const isPatched = code.includes(VSCODE_PATCH_START);
+                const backupFile = path.join(BACKUP_DIR, `extension.js.${ext.version}.backup`);
+                console.log(`   📌 Version             : v${ext.version}`);
+                console.log(`   📂 Extension Path      : ${ext.dir}`);
+                console.log(`   ✨ RTL Patch Status    : ${isPatched ? 'INSTALLED ✅' : 'NOT INSTALLED ❌'}`);
+                console.log(`   📦 Backup Available    : ${fs.existsSync(backupFile) ? 'YES' : 'NO'}`);
             }
-        } catch (_) {}
+        } else {
+            console.log('💻 VS Code Extension (Google Antigravity): NOT FOUND ❌');
+        }
+        console.log('============================================================\n');
+        return;
     }
 
-    // Clean up any leftover temp directories from older versions of the patcher
+    // Clean up old temp dirs
     for (const oldTemp of ['temp_extract_rtl_patch', 'temp_check_rtl', 'temp_check_asar']) {
         const p = path.join(__dirname, oldTemp);
         if (fs.existsSync(p)) {
@@ -793,79 +1244,82 @@ async function patch(targetAsarPath = ASAR_PATH) {
         }
     }
 
-    // Remove legacy app.asar.backup inside resources/ so NSIS updater never trips on extra files
-    if (targetAsarPath === ASAR_PATH && fs.existsSync(LEGACY_BACKUP_PATH)) {
-        try {
-            fs.rmSync(LEGACY_BACKUP_PATH, { force: true });
+    // 1. Desktop Patch / Restore
+    if (shouldHandleDesktop && fs.existsSync(targetAsarPath)) {
+        if (!isQuiet) {
+            console.log(isRestore ? '🔄 Restoring Antigravity Desktop app.asar...' : '🚀 Checking Antigravity Desktop App...');
+        }
+
+        if (targetAsarPath === ASAR_PATH && fs.existsSync(LEGACY_BACKUP_PATH)) {
+            try { fs.rmSync(LEGACY_BACKUP_PATH, { force: true }); } catch (_) {}
+        }
+
+        const currentBuf = fs.readFileSync(targetAsarPath);
+        const { version, utilsStr } = validateAsarBufferIntegrity(currentBuf);
+        const versionedBackupPath = path.join(BACKUP_DIR, `app.asar.${version}.backup`);
+        const isCurrentlyPatched = utilsStr.includes(PATCH_START_MARKER) || utilsStr.includes(LEGACY_MARKER);
+
+        if (!isCurrentlyPatched && !fs.existsSync(versionedBackupPath)) {
+            fs.mkdirSync(BACKUP_DIR, { recursive: true });
+            fs.writeFileSync(versionedBackupPath, currentBuf);
             if (!isQuiet) {
-                console.log('🧹 Removed legacy backup from resources/ folder to keep auto-updates clean.');
+                console.log(`📦 Saved clean backup for Desktop v${version} at: ${versionedBackupPath}`);
             }
-        } catch (_) {}
-    }
-
-    const currentBuf = fs.readFileSync(targetAsarPath);
-    const { version, utilsStr } = validateAsarBufferIntegrity(currentBuf);
-    if (!isQuiet && !isStatus) {
-        console.log(`📌 Detected Antigravity version: v${version}`);
-    }
-
-    fs.mkdirSync(BACKUP_DIR, { recursive: true });
-    const versionedBackupPath = path.join(BACKUP_DIR, `app.asar.${version}.backup`);
-
-    const isCurrentlyPatched = utilsStr.includes(PATCH_START_MARKER) || utilsStr.includes(LEGACY_MARKER);
-
-    if (isStatus) {
-        console.log(`📌 Antigravity Version : v${version}`);
-        console.log(`📂 ASAR Path           : ${targetAsarPath}`);
-        console.log(`✨ RTL Patch Status    : ${isCurrentlyPatched ? 'INSTALLED ✅' : 'NOT INSTALLED ❌'}`);
-        console.log(`🛡️  Auto-Patch on Update: ${isAutoPatchRegistered() ? 'ENABLED ✅ (' + AUTO_PATCHER_SCRIPT + ')' : 'DISABLED ❌'}`);
-        console.log(`📦 Backup Available    : ${fs.existsSync(versionedBackupPath) ? 'YES (' + versionedBackupPath + ')' : 'Self-embedded inside ASAR'}`);
-        return;
-    }
-
-    // Fast no-op for background --auto-check / --wait-for-update if already patched with current marker
-    if ((isAutoCheck || isWaitForUpdate) && utilsStr.includes(PATCH_START_MARKER)) {
-        return;
-    }
-
-    if (!isCurrentlyPatched && !fs.existsSync(versionedBackupPath)) {
-        fs.writeFileSync(versionedBackupPath, currentBuf);
-        if (!isQuiet) {
-            console.log(`📦 Saved clean backup for v${version} at: ${versionedBackupPath}`);
         }
-    }
 
-    if (isRestore) {
-        unregisterAutoPatchAgent(isQuiet);
-        const restoredBuf = buildRestoredAsarBuffer(currentBuf);
-        writeAsarSafely(targetAsarPath, restoredBuf);
-        if (!isQuiet) {
-            console.log(`✅ Restored clean unpatched app.asar for v${version} successfully.`);
+        if (isRestore) {
+            unregisterAutoPatchAgent(isQuiet);
+            const restoredBuf = buildRestoredAsarBuffer(currentBuf);
+            writeAsarSafely(targetAsarPath, restoredBuf);
+            if (!isQuiet) {
+                console.log(`✅ Restored clean unpatched Desktop app.asar for v${version} successfully.`);
+            }
+        } else if (!isCurrentlyPatched || (!isAutoCheck && !isWaitForUpdate)) {
+            if (!isQuiet) {
+                console.log(`🛠️  Surgically patching Desktop dist/utils.js for Antigravity v${version}...`);
+            }
+            const patchedAsarBuf = buildPatchedAsarBuffer(currentBuf, buildInjectionCode);
+            writeAsarSafely(targetAsarPath, patchedAsarBuf);
+            if (!isQuiet) {
+                console.log(`✅ Desktop RTL Patch successfully applied for Antigravity v${version}!`);
+            }
         }
-        return;
+    } else if (desktopOnly) {
+        console.error('❌ Could not find Antigravity Desktop app.asar at: ' + targetAsarPath);
+        process.exit(1);
     }
 
-    if (!isQuiet) {
-        console.log('🛠️  Surgically patching dist/utils.js (Zero-Shift End-of-Payload Append)...');
+    // 2. VS Code Extension Patch / Restore
+    if (shouldHandleVscode && vscodeExtensions.length > 0) {
+        for (const ext of vscodeExtensions) {
+            if (isRestore) {
+                restoreVscodeExtension(ext, isQuiet);
+            } else {
+                patchVscodeExtension(ext, isQuiet);
+            }
+        }
+    } else if (vscodeOnly) {
+        console.error('❌ Could not find Google Antigravity VS Code extension in:');
+        for (const dir of getVscodeExtensionsDirs()) {
+            console.error('  - ' + dir);
+        }
+        console.error('Tip: Specify custom path via: node install.js --vscode-path "/path/to/google.google-antigravity-*"');
+        process.exit(1);
     }
-    const patchedAsarBuf = buildPatchedAsarBuffer(currentBuf, buildInjectionCode);
 
-    writeAsarSafely(targetAsarPath, patchedAsarBuf);
-
-    // Final read-back verification from disk
-    const finalDiskBuf = fs.readFileSync(targetAsarPath);
-    const finalCheck = validateAsarBufferIntegrity(finalDiskBuf);
-    if (!finalCheck.utilsStr.includes(PATCH_START_MARKER)) {
-        throw new Error('Post-write verification failed: patch marker not found on disk.');
-    }
-
-    if (!noAutoPatch && !isAutoCheck && !isWaitForUpdate && targetAsarPath === ASAR_PATH) {
+    // Register Background Auto-Patch
+    if (!noAutoPatch && !isRestore && !isAutoCheck && !isWaitForUpdate) {
         registerAutoPatchAgent(isQuiet);
     }
 
-    if (!isQuiet) {
-        console.log(`✅ RTL Patch successfully applied and verified for Antigravity v${version}!`);
-        console.log('🎉 Please restart Antigravity (or press Ctrl+R / Reload Window) to see the RTL controls.');
+    if (!isQuiet && !isRestore) {
+        console.log('\n🎉 RTL Patching Complete!');
+        if (shouldHandleDesktop && fs.existsSync(targetAsarPath)) {
+            console.log('👉 Desktop App : Restart Antigravity (or press Ctrl+R) to view RTL controls.');
+        }
+        if (shouldHandleVscode && vscodeExtensions.length > 0) {
+            console.log('👉 VS Code     : Run "Developer: Reload Window" in VS Code to activate RTL.');
+        }
     }
 }
 
@@ -882,4 +1336,9 @@ module.exports = {
     buildPatchedAsarBuffer,
     buildRestoredAsarBuffer,
     validateAsarBufferIntegrity,
+    findInstalledVscodeExtensions,
+    patchVscodeExtension,
+    restoreVscodeExtension,
+    patchVscodeExtensionCode,
+    stripVscodePatch,
 };
