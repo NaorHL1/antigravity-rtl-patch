@@ -1,16 +1,82 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const vm = require('vm');
 const { execSync } = require('child_process');
 
-// Default paths for Antigravity on Windows
-const RESOURCES_DIR = path.join(process.env.LOCALAPPDATA, 'Programs', 'antigravity', 'resources');
-const ASAR_PATH = path.join(RESOURCES_DIR, 'app.asar');
-const LEGACY_BACKUP_PATH = path.join(RESOURCES_DIR, 'app.asar.backup');
+/**
+ * Resolves the platform-appropriate state/backup directory outside Antigravity's install folder
+ * so OS installers/updaters (NSIS, DMG, deb/rpm) never collide with extra backup files.
+ */
+function resolvePatchStateDir() {
+    const home = os.homedir();
+    if (process.platform === 'win32') {
+        const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+        return path.join(localAppData, 'antigravity-rtl-patch');
+    }
+    if (process.platform === 'darwin') {
+        return path.join(home, 'Library', 'Application Support', 'antigravity-rtl-patch');
+    }
+    const xdgData = process.env.XDG_DATA_HOME || path.join(home, '.local', 'share');
+    return path.join(xdgData, 'antigravity-rtl-patch');
+}
 
-// Store versioned backups outside the app's resources folder so NSIS updates never collide with extra files
-const BACKUP_DIR = path.join(process.env.LOCALAPPDATA, 'antigravity-rtl-patch', 'backups');
+/**
+ * Returns candidate paths for Antigravity's app.asar across Windows, macOS, and Linux.
+ */
+function getCandidateAsarPaths() {
+    const home = os.homedir();
+    const candidates = [];
+
+    // 1. CLI flag --asar-path <path> or env override
+    const flagIdx = process.argv.indexOf('--asar-path');
+    if (flagIdx !== -1 && process.argv[flagIdx + 1]) {
+        candidates.push(path.resolve(process.argv[flagIdx + 1]));
+    }
+    if (process.env.ANTIGRAVITY_ASAR_PATH) {
+        candidates.push(path.resolve(process.env.ANTIGRAVITY_ASAR_PATH));
+    }
+
+    if (process.platform === 'win32') {
+        const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+        candidates.push(path.join(localAppData, 'Programs', 'antigravity', 'resources', 'app.asar'));
+        if (process.env.PROGRAMFILES) {
+            candidates.push(path.join(process.env.PROGRAMFILES, 'Antigravity', 'resources', 'app.asar'));
+        }
+        if (process.env['PROGRAMFILES(X86)']) {
+            candidates.push(path.join(process.env['PROGRAMFILES(X86)'], 'Antigravity', 'resources', 'app.asar'));
+        }
+    } else if (process.platform === 'darwin') {
+        candidates.push('/Applications/Antigravity.app/Contents/Resources/app.asar');
+        candidates.push(path.join(home, 'Applications', 'Antigravity.app', 'Contents', 'Resources', 'app.asar'));
+    } else {
+        // Linux standard install locations
+        candidates.push('/opt/Antigravity/resources/app.asar');
+        candidates.push('/opt/antigravity/resources/app.asar');
+        candidates.push('/usr/lib/antigravity/resources/app.asar');
+        candidates.push('/usr/share/antigravity/resources/app.asar');
+        candidates.push(path.join(home, '.local', 'share', 'antigravity', 'resources', 'app.asar'));
+    }
+
+    return candidates;
+}
+
+function resolveAsarPath() {
+    const candidates = getCandidateAsarPaths();
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+            return candidate;
+        }
+    }
+    return candidates[0];
+}
+
+const STATE_DIR = resolvePatchStateDir();
+const BACKUP_DIR = path.join(STATE_DIR, 'backups');
+const ASAR_PATH = resolveAsarPath();
+const RESOURCES_DIR = path.dirname(ASAR_PATH);
+const LEGACY_BACKUP_PATH = path.join(RESOURCES_DIR, 'app.asar.backup');
 
 const PATCH_START_MARKER = '/* === AG_RTL_PATCH_START === */';
 const PATCH_END_MARKER = '/* === AG_RTL_PATCH_END === */';
@@ -342,6 +408,9 @@ function buildInjectionCode(origOffset, origSize, origPayloadLen) {
                         // 2. Create Controls
                         const controls = document.createElement('div');
                         controls.id = 'ag-rtl-controls';
+                        if (navigator.platform && /Mac|iPod|iPhone|iPad/.test(navigator.platform)) {
+                            controls.style.right = '24px';
+                        }
 
                         const forceBtn = document.createElement('button');
                         forceBtn.className = 'ag-rtl-btn';
@@ -511,7 +580,11 @@ async function patch(targetAsarPath = ASAR_PATH) {
 
     if (!fs.existsSync(targetAsarPath)) {
         console.error('❌ Could not find app.asar at: ' + targetAsarPath);
-        console.error('Please make sure Antigravity is installed.');
+        console.error('Searched candidate paths for ' + process.platform + ':');
+        for (const c of getCandidateAsarPaths()) {
+            console.error('  - ' + c);
+        }
+        console.error('Tip: Pass a custom path via: node install.js --asar-path "/path/to/resources/app.asar"');
         process.exit(1);
     }
 
