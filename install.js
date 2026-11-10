@@ -304,6 +304,36 @@ function buildRestoredAsarBuffer(buf) {
 function buildInjectionCode(origOffset, origSize, origPayloadLen) {
     return `${PATCH_START_MARKER} /* AG_RTL_ORIG:${origOffset}:${origSize}:${origPayloadLen} */
     {
+        try {
+            if (!global.__agRtlWillQuitHooked && electron_1 && electron_1.app) {
+                global.__agRtlWillQuitHooked = true;
+                electron_1.app.once('will-quit', () => {
+                    try {
+                        const osMod = require('os');
+                        const cpMod = require('child_process');
+                        const homeDir = osMod.homedir();
+                        const stateDir = process.platform === 'win32'
+                            ? path_1.default.join(process.env.LOCALAPPDATA || path_1.default.join(homeDir, 'AppData', 'Local'), 'antigravity-rtl-patch')
+                            : process.platform === 'darwin'
+                                ? path_1.default.join(homeDir, 'Library', 'Application Support', 'antigravity-rtl-patch')
+                                : path_1.default.join(process.env.XDG_DATA_HOME || path_1.default.join(homeDir, '.local', 'share'), 'antigravity-rtl-patch');
+                        const autoPatcherScript = path_1.default.join(stateDir, 'auto-patcher.js');
+                        const nodeBinCfg = path_1.default.join(stateDir, 'node-path.txt');
+                        const nodeBin = fs.existsSync(nodeBinCfg) ? fs.readFileSync(nodeBinCfg, 'utf8').trim() : 'node';
+                        if (fs.existsSync(autoPatcherScript)) {
+                            const child = cpMod.spawn(nodeBin, [autoPatcherScript, '--wait-for-update', '--quiet'], {
+                                cwd: osMod.tmpdir(),
+                                detached: true,
+                                stdio: 'ignore',
+                                windowsHide: true,
+                            });
+                            child.unref();
+                        }
+                    } catch (_) {}
+                });
+            }
+        } catch (_) {}
+
         const agRtlWebContents = (typeof getHubWebContents === 'function' ? getHubWebContents(win) : null) || win.webContents;
         if (agRtlWebContents && typeof agRtlWebContents.on === 'function') {
             agRtlWebContents.on('did-finish-load', () => {
@@ -505,27 +535,137 @@ function buildInjectionCode(origOffset, origSize, origPayloadLen) {
     ${PATCH_END_MARKER}`;
 }
 
+const AUTO_PATCHER_SCRIPT = path.join(STATE_DIR, 'auto-patcher.js');
+const AUTO_PATCHER_VBS = path.join(STATE_DIR, 'auto-patcher.vbs');
+const NODE_PATH_FILE = path.join(STATE_DIR, 'node-path.txt');
+const WIN_TASK_NAME = 'AntigravityRTLAutoPatch';
+
+function sleepMs(ms) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
  * Checks if the NSIS installer/updater is currently running in the background.
  * Waiting for it prevents locking resources/ while Uninstall Antigravity.exe is replacing the app.
  */
-function waitForBackgroundUpdater() {
+function waitForBackgroundUpdater(quiet = false) {
     if (process.platform !== 'win32') return;
-    const maxWaitSec = 90;
+    const maxWaitSec = 180;
     for (let waited = 0; waited < maxWaitSec; waited += 2) {
         try {
             const out = execSync('tasklist /FI "IMAGENAME eq Antigravity-x64.exe" /FO CSV /NH', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
             const outUninstall = execSync('tasklist /FI "IMAGENAME eq Uninstall Antigravity.exe" /FO CSV /NH', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
             const updaterRunning = out.includes('Antigravity-x64.exe') || outUninstall.includes('Uninstall');
             if (!updaterRunning) return;
-            if (waited === 0) {
+            if (waited === 0 && !quiet) {
                 console.log('⏳ Antigravity is currently finishing an update in the background. Waiting for it to complete safely...');
             }
-            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+            sleepMs(2000);
         } catch (_) {
             return;
         }
     }
+}
+
+/**
+ * Registers the standalone auto-patcher outside the Antigravity directory so updates never overwrite it,
+ * plus an OS-level logon/background trigger so the RTL patch survives every Antigravity update automatically.
+ */
+function registerAutoPatchAgent(quiet = false) {
+    try {
+        fs.mkdirSync(STATE_DIR, { recursive: true });
+        const selfContent = fs.readFileSync(__filename, 'utf8');
+        fs.writeFileSync(AUTO_PATCHER_SCRIPT, selfContent, { mode: 0o755 });
+        fs.writeFileSync(NODE_PATH_FILE, process.execPath, 'utf8');
+
+        if (process.platform === 'win32') {
+            // Silent VBScript launcher so scheduled runs never flash a console window
+            const vbsContent = [
+                'Set WshShell = CreateObject("WScript.Shell")',
+                `WshShell.CurrentDirectory = "${os.tmpdir().replace(/"/g, '""')}"`,
+                `WshShell.Run """${process.execPath.replace(/"/g, '""')}"" ""${AUTO_PATCHER_SCRIPT.replace(/"/g, '""')}"" --auto-check --quiet", 0, False`,
+            ].join('\r\n');
+            fs.writeFileSync(AUTO_PATCHER_VBS, vbsContent, 'utf8');
+
+            try {
+                execSync(
+                    `schtasks /Create /TN "${WIN_TASK_NAME}" /TR "wscript.exe //B //NoLogo \\"${AUTO_PATCHER_VBS}\\"" /SC ONLOGON /F`,
+                    { stdio: 'ignore' }
+                );
+            } catch (_) {}
+        } else if (process.platform === 'darwin') {
+            const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+            fs.mkdirSync(launchAgentsDir, { recursive: true });
+            const plistPath = path.join(launchAgentsDir, 'com.naorhl1.antigravity-rtl-patch.plist');
+            const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.naorhl1.antigravity-rtl-patch</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${process.execPath}</string>
+        <string>${AUTO_PATCHER_SCRIPT}</string>
+        <string>--auto-check</string>
+        <string>--quiet</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>WorkingDirectory</key>
+    <string>${os.tmpdir()}</string>
+</dict>
+</plist>`;
+            fs.writeFileSync(plistPath, plist, 'utf8');
+        } else {
+            const autostartDir = path.join(os.homedir(), '.config', 'autostart');
+            fs.mkdirSync(autostartDir, { recursive: true });
+            const desktopPath = path.join(autostartDir, 'antigravity-rtl-patch.desktop');
+            const desktopEntry = `[Desktop Entry]
+Type=Application
+Name=Antigravity RTL Auto-Patcher
+Exec="${process.execPath}" "${AUTO_PATCHER_SCRIPT}" --auto-check --quiet
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+`;
+            fs.writeFileSync(desktopPath, desktopEntry, 'utf8');
+        }
+
+        if (!quiet) {
+            console.log('🛡️  Auto-Patch on Update enabled (survives future Antigravity updates automatically).');
+        }
+    } catch (err) {
+        if (!quiet) {
+            console.warn('⚠️  Could not register background auto-patcher:', err.message);
+        }
+    }
+}
+
+function unregisterAutoPatchAgent(quiet = false) {
+    try {
+        if (process.platform === 'win32') {
+            try {
+                execSync(`schtasks /Delete /TN "${WIN_TASK_NAME}" /F`, { stdio: 'ignore' });
+            } catch (_) {}
+        } else if (process.platform === 'darwin') {
+            const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.naorhl1.antigravity-rtl-patch.plist');
+            if (fs.existsSync(plistPath)) fs.rmSync(plistPath, { force: true });
+        } else {
+            const desktopPath = path.join(os.homedir(), '.config', 'autostart', 'antigravity-rtl-patch.desktop');
+            if (fs.existsSync(desktopPath)) fs.rmSync(desktopPath, { force: true });
+        }
+        if (fs.existsSync(AUTO_PATCHER_SCRIPT)) fs.rmSync(AUTO_PATCHER_SCRIPT, { force: true });
+        if (fs.existsSync(AUTO_PATCHER_VBS)) fs.rmSync(AUTO_PATCHER_VBS, { force: true });
+        if (fs.existsSync(NODE_PATH_FILE)) fs.rmSync(NODE_PATH_FILE, { force: true });
+        if (!quiet) {
+            console.log('🧹 Removed Auto-Patch background agent.');
+        }
+    } catch (_) {}
+}
+
+function isAutoPatchRegistered() {
+    return fs.existsSync(AUTO_PATCHER_SCRIPT);
 }
 
 function validateAsarBufferIntegrity(asarBuf) {
@@ -584,8 +724,9 @@ Usage:
   node install.js [options]
 
 Options:
-  --restore              Restore original unpatched app.asar
-  --status               Check current Antigravity version and RTL patch status
+  --restore              Restore original unpatched app.asar & remove auto-patcher
+  --status               Check current Antigravity version, RTL patch & Auto-Patch status
+  --no-auto-patch        Apply RTL patch once without registering the update auto-patcher
   --asar-path <path>     Specify custom path to resources/app.asar
   --help, -h             Show this help message
 `);
@@ -597,21 +738,51 @@ async function patch(targetAsarPath = ASAR_PATH) {
         return;
     }
 
+    const isQuiet = process.argv.includes('--quiet');
+    const isWaitForUpdate = process.argv.includes('--wait-for-update');
+    const isAutoCheck = process.argv.includes('--auto-check');
     const isStatus = process.argv.includes('--status');
     const isRestore = process.argv.includes('--restore');
-    if (!isStatus) {
-        console.log(isRestore ? '🔄 Restoring original Antigravity app.asar...' : '🚀 Starting Antigravity 2.0 RTL Patch (Zero-Shift Surgical Mode)...');
-        waitForBackgroundUpdater();
+    const noAutoPatch = process.argv.includes('--no-auto-patch');
+
+    // Never hold a working directory lock inside Antigravity when running as background auto-patcher
+    if (isWaitForUpdate || isAutoCheck) {
+        try { process.chdir(os.tmpdir()); } catch (_) {}
+    }
+
+    if (isWaitForUpdate) {
+        // Give the OS/NSIS updater time to start after Antigravity quits, then wait until it exits completely
+        sleepMs(10000);
+        waitForBackgroundUpdater(true);
+        sleepMs(5000);
+    } else if (!isStatus) {
+        if (!isQuiet) {
+            console.log(isRestore ? '🔄 Restoring original Antigravity app.asar...' : '🚀 Starting Antigravity 2.0 RTL Patch (Zero-Shift Surgical Mode)...');
+        }
+        waitForBackgroundUpdater(isQuiet);
     }
 
     if (!fs.existsSync(targetAsarPath)) {
-        console.error('❌ Could not find app.asar at: ' + targetAsarPath);
-        console.error('Searched candidate paths for ' + process.platform + ':');
-        for (const c of getCandidateAsarPaths()) {
-            console.error('  - ' + c);
+        if (!isQuiet) {
+            console.error('❌ Could not find app.asar at: ' + targetAsarPath);
+            console.error('Searched candidate paths for ' + process.platform + ':');
+            for (const c of getCandidateAsarPaths()) {
+                console.error('  - ' + c);
+            }
+            console.error('Tip: Pass a custom path via: node install.js --asar-path "/path/to/resources/app.asar"');
         }
-        console.error('Tip: Pass a custom path via: node install.js --asar-path "/path/to/resources/app.asar"');
-        process.exit(1);
+        process.exit(isQuiet ? 0 : 1);
+    }
+
+    // If running as background auto-check, don't touch app.asar if it was modified in the last 15 seconds (update still settling)
+    if (isAutoCheck || isWaitForUpdate) {
+        try {
+            const stat = fs.statSync(targetAsarPath);
+            if (Date.now() - stat.mtimeMs < 15000) {
+                sleepMs(15000);
+                waitForBackgroundUpdater(true);
+            }
+        } catch (_) {}
     }
 
     // Clean up any leftover temp directories from older versions of the patcher
@@ -626,13 +797,17 @@ async function patch(targetAsarPath = ASAR_PATH) {
     if (targetAsarPath === ASAR_PATH && fs.existsSync(LEGACY_BACKUP_PATH)) {
         try {
             fs.rmSync(LEGACY_BACKUP_PATH, { force: true });
-            console.log('🧹 Removed legacy backup from resources/ folder to keep auto-updates clean.');
+            if (!isQuiet) {
+                console.log('🧹 Removed legacy backup from resources/ folder to keep auto-updates clean.');
+            }
         } catch (_) {}
     }
 
     const currentBuf = fs.readFileSync(targetAsarPath);
     const { version, utilsStr } = validateAsarBufferIntegrity(currentBuf);
-    console.log(`📌 Detected Antigravity version: v${version}`);
+    if (!isQuiet && !isStatus) {
+        console.log(`📌 Detected Antigravity version: v${version}`);
+    }
 
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const versionedBackupPath = path.join(BACKUP_DIR, `app.asar.${version}.backup`);
@@ -643,23 +818,36 @@ async function patch(targetAsarPath = ASAR_PATH) {
         console.log(`📌 Antigravity Version : v${version}`);
         console.log(`📂 ASAR Path           : ${targetAsarPath}`);
         console.log(`✨ RTL Patch Status    : ${isCurrentlyPatched ? 'INSTALLED ✅' : 'NOT INSTALLED ❌'}`);
+        console.log(`🛡️  Auto-Patch on Update: ${isAutoPatchRegistered() ? 'ENABLED ✅ (' + AUTO_PATCHER_SCRIPT + ')' : 'DISABLED ❌'}`);
         console.log(`📦 Backup Available    : ${fs.existsSync(versionedBackupPath) ? 'YES (' + versionedBackupPath + ')' : 'Self-embedded inside ASAR'}`);
+        return;
+    }
+
+    // Fast no-op for background --auto-check / --wait-for-update if already patched with current marker
+    if ((isAutoCheck || isWaitForUpdate) && utilsStr.includes(PATCH_START_MARKER)) {
         return;
     }
 
     if (!isCurrentlyPatched && !fs.existsSync(versionedBackupPath)) {
         fs.writeFileSync(versionedBackupPath, currentBuf);
-        console.log(`📦 Saved clean backup for v${version} at: ${versionedBackupPath}`);
+        if (!isQuiet) {
+            console.log(`📦 Saved clean backup for v${version} at: ${versionedBackupPath}`);
+        }
     }
 
     if (isRestore) {
+        unregisterAutoPatchAgent(isQuiet);
         const restoredBuf = buildRestoredAsarBuffer(currentBuf);
         writeAsarSafely(targetAsarPath, restoredBuf);
-        console.log(`✅ Restored clean unpatched app.asar for v${version} successfully.`);
+        if (!isQuiet) {
+            console.log(`✅ Restored clean unpatched app.asar for v${version} successfully.`);
+        }
         return;
     }
 
-    console.log('🛠️  Surgically patching dist/utils.js (Zero-Shift End-of-Payload Append)...');
+    if (!isQuiet) {
+        console.log('🛠️  Surgically patching dist/utils.js (Zero-Shift End-of-Payload Append)...');
+    }
     const patchedAsarBuf = buildPatchedAsarBuffer(currentBuf, buildInjectionCode);
 
     writeAsarSafely(targetAsarPath, patchedAsarBuf);
@@ -671,8 +859,14 @@ async function patch(targetAsarPath = ASAR_PATH) {
         throw new Error('Post-write verification failed: patch marker not found on disk.');
     }
 
-    console.log(`✅ RTL Patch successfully applied and verified for Antigravity v${version}!`);
-    console.log('🎉 Please restart Antigravity (or press Ctrl+R / Reload Window) to see the RTL controls.');
+    if (!noAutoPatch && !isAutoCheck && !isWaitForUpdate && targetAsarPath === ASAR_PATH) {
+        registerAutoPatchAgent(isQuiet);
+    }
+
+    if (!isQuiet) {
+        console.log(`✅ RTL Patch successfully applied and verified for Antigravity v${version}!`);
+        console.log('🎉 Please restart Antigravity (or press Ctrl+R / Reload Window) to see the RTL controls.');
+    }
 }
 
 if (require.main === module) {

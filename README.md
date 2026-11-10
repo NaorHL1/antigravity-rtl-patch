@@ -1,6 +1,6 @@
 # Antigravity 2.0 RTL Patcher
 
-> **A native Right-to-Left (RTL) injection patch for the Antigravity 2.0 Desktop Application.**
+> **A zero-dependency, surgical Right-to-Left (RTL) injection patch for the Antigravity 2.0 Desktop Application (Windows, macOS & Linux).**
 
 ![RTL Controls](screenshot.png)
 
@@ -14,52 +14,44 @@
 Antigravity 2.0 Desktop has no built-in RTL support. If you work in Hebrew, Arabic, or Persian, all text aligns to the left — making mixed-language responses nearly unreadable and breaking your workflow.
 
 ### The Solution
-This patcher injects smart RTL controls directly into the application's title bar.
+This patcher surgically injects smart RTL controls directly into the application's title bar with zero external dependencies.
 
 ### ✨ Features
 
-- **Auto RTL** — Scans each paragraph individually. Hebrew/Arabic/Persian text aligns right; English text in the same response stays left-aligned.
-- **Code-Aware** — Code blocks remain strictly LTR. Hebrew comments inside code (e.g., `// בדיקה`) render correctly without breaking syntax.
+- **Auto RTL** — Scans each paragraph and list item individually. Hebrew/Arabic/Persian text aligns right; English text in the same response stays left-aligned.
+- **Inline BiDi & Code Protection** — Code blocks remain strictly LTR, Hebrew comments inside code render cleanly (`unicode-bidi: plaintext`), and inline `<code>`, `<kbd>`, and paths inside RTL sentences are isolated (`unicode-bidi: isolate`) so punctuation and flags never flip.
 - **Force RTL** — A manual toggle to force the entire chat to RTL when needed.
-- **Persistent State** — Remembers your preferred RTL mode (`Auto RTL`, `Force RTL`, or `Off`) across restarts (`Auto RTL` enabled by default).
-- **Zero-Shift Surgical Patching & Safe Restore** — Patches `dist/utils.js` directly in memory without unpacking or altering other file offsets, validates V8 syntax before writing, and stores versioned backups outside `resources/` so auto-updates stay clean. Run `node install.js --restore` anytime to restore the exact original archive.
+- **Auto-Patch Across Updates** — Automatically registers a lightweight background hook & logon task outside the app folder so the RTL patch re-applies itself after Antigravity updates without colliding with the installer.
+- **Cross-Platform** — Supports **Windows**, **macOS**, and **Linux** out of the box.
+- **Zero-Shift Surgical Patching & Safe Restore** — Modifies only `dist/utils.js` in memory (keeping all other 760+ packed files and `app.asar.unpacked` at their exact original byte offsets), validates V8 syntax before writing, and supports instant bit-for-bit restoration.
 
 ### 📋 Requirements
 
-- Windows OS
+- **Windows**, **macOS**, or **Linux**
 - [Antigravity 2.0](https://antigravity.dev/) Desktop App installed
 - [Node.js](https://nodejs.org/) (v16+)
 
 ### 🚀 Installation
 
-#### Option A: Using Git
+#### Option A: 1-Click via `npx` (No Clone Required)
+```bash
+npx github:NaorHL1/antigravity-rtl-patch
+```
+
+#### Option B: Using Git
 ```bash
 git clone https://github.com/NaorHL1/antigravity-rtl-patch.git
 cd antigravity-rtl-patch
-npm install
 node install.js
 ```
 
-#### Option B: Manual Download
-1. Click the green **"<> Code"** button above → **"Download ZIP"**.
-2. Extract the ZIP and open a terminal in the extracted folder.
-3. Run:
-   ```bash
-   npm install
-   node install.js
-   ```
-
-#### After Installation
-Close Antigravity completely (including the system tray) and reopen it.  
-You will see two new buttons in the top-right corner: `⇄ Force RTL` and `✨ Auto RTL`.
-
-### 🔄 After Antigravity Updates
-When Antigravity updates, the patch is overwritten. Simply run `node install.js` again.
-
-### 🌟 Roadmap
-- Cross-platform support (Mac / Linux)
-- Keyboard shortcut toggle (`Ctrl+Shift+R`)
-- Persistent state across restarts
+#### CLI Options
+```bash
+npx github:NaorHL1/antigravity-rtl-patch --status          # Check version, patch & auto-patch status
+npx github:NaorHL1/antigravity-rtl-patch --restore         # Restore original unpatched app.asar & remove auto-patcher
+npx github:NaorHL1/antigravity-rtl-patch --no-auto-patch   # Apply patch once without background auto-patcher
+npx github:NaorHL1/antigravity-rtl-patch --asar-path <p>   # Specify custom path to resources/app.asar
+```
 
 ---
 
@@ -69,33 +61,27 @@ When Antigravity updates, the patch is overwritten. Simply run `node install.js`
 ל-Antigravity 2.0 Desktop אין תמיכה מובנית ב-RTL. מי שעובד בעברית מקבל טקסט שמיושר לשמאל — מה שהופך קריאה של תגובות שמשלבות עברית, אנגלית וקוד לחוויה מתסכלת.
 
 ### הפתרון
-פאץ' שמזריק כפתורי שליטה חכמים ישירות לשורת הכותרת של התוכנה.
+פאץ' כירורגי שמזריק כפתורי שליטה חכמים ישירות לשורת הכותרת של התוכנה, ללא תלויות חיצוניות.
 
 ### ✨ יכולות
-- **Auto RTL** — מזהה אוטומטית פסקאות בעברית והופך רק אותן ל-RTL. פסקאות באנגלית באותה הודעה נשארות מיושרות לשמאל.
-- **הגנה על קוד** — בלוקים של קוד נשארים LTR. הערות בעברית בתוך הקוד מוצגות כראוי בלי לשבור תחביר.
-- **Force RTL** — מצב ידני שמאלץ RTL על כל הצ'אט.
+- **Auto RTL** — מזהה אוטומטית פסקאות ורשימות בעברית והופך רק אותן ל-RTL. פסקאות באנגלית באותה הודעה נשארות מיושרות לשמאל.
+- **הגנה על קוד וסימני פיסוק (Inline BiDi)** — בלוקים של קוד נשארים LTR, ותגיות קוד בתוך משפט עברי (`<code>`) מבודדות עם `unicode-bidi: isolate` כך שסימני פיסוק, סוגריים ודגלים לא קופצים לצד הלא נכון.
+- **מנגנון Auto-Patch בעדכוני תוכנה** — שומר סוכן קל מחוץ לתיקיית התוכנה שמזהה מתי Antigravity סיימה להתעדכן ומזריק את הפאץ' מחדש אוטומטית.
+- **תמיכה ב-Windows, macOS ו-Linux** — מזהה אוטומטית את נתיב ההתקנה בכל מערכת הפעלה.
 
-### 🚀 התקנה
-
-#### אפשרות א׳: דרך Git
+### 🚀 התקנה בלחיצה אחת (NPX)
+פתחו טרמינל והריצו פקודה אחת בלבד (ללא צורך ב-Git Clone או `npm install`):
 ```bash
-git clone https://github.com/NaorHL1/antigravity-rtl-patch.git
-cd antigravity-rtl-patch
-npm install
-node install.js
+npx github:NaorHL1/antigravity-rtl-patch
 ```
 
-#### אפשרות ב׳: הורדה ידנית
-1. לחצו על הכפתור הירוק **"<> Code"** למעלה → **"Download ZIP"**.
-2. חלצו את הקובץ ופתחו טרמינל בתיקייה.
-3. הריצו:
-   ```bash
-   npm install
-   node install.js
-   ```
+לבדיקת סטטוס או להסרת הפאץ' ושחזור מלא:
+```bash
+npx github:NaorHL1/antigravity-rtl-patch --status
+npx github:NaorHL1/antigravity-rtl-patch --restore
+```
 
-לאחר ההתקנה, סגרו את Antigravity לחלוטין (כולל מגש המערכת) ופתחו מחדש.
+לאחר ההתקנה הראשונית, הפעילו מחדש את Antigravity.
 
 ---
 
@@ -105,16 +91,12 @@ node install.js
 تطبيق Antigravity 2.0 لا يدعم الكتابة من اليمين إلى اليسار (RTL). النصوص العربية تظهر بمحاذاة يسارية مما يجعل القراءة صعبة.
 
 ### الحل
-هذا السكريبت يضيف أزرار تحكم ذكية في شريط عنوان التطبيق.
+هذا السكريبت يضيف أزرار تحكم ذكية في شريط عنوان التطبيق مع حماية كاملة للأكواد وعلامات الترقيم، ويدعم Windows و macOS و Linux مع إعادة التفعيل التلقائي بعد التحديثات.
 
-### 🚀 التثبيت
+### 🚀 التثبيت بخطوة واحدة (NPX)
 ```bash
-git clone https://github.com/NaorHL1/antigravity-rtl-patch.git
-cd antigravity-rtl-patch
-npm install
-node install.js
+npx github:NaorHL1/antigravity-rtl-patch
 ```
-أو قم بتنزيل ZIP من الزر الأخضر **"<> Code"** أعلاه، واستخرجه، ثم شغّل الأوامر أعلاه في المجلد.
 
 أعد تشغيل التطبيق بعد التثبيت.
 
@@ -126,18 +108,14 @@ node install.js
 برنامه Antigravity 2.0 از راست‌چین (RTL) پشتیبانی نمی‌کند. متن‌های فارسی از چپ نمایش داده می‌شوند.
 
 ### راه‌حل
-این اسکریپت دکمه‌های کنترل هوشمند را به نوار عنوان برنامه اضافه می‌کند.
+این اسکریپت دکمه‌های کنترل هوشمند را به نوار عنوان برنامه اضافه می‌کند، از کدها و علائم نگارشی محافظت می‌کند و از Windows، macOS و Linux پشتیبانی می‌کند.
 
-### 🚀 نصب
+### 🚀 نصب با یک دستور (NPX)
 ```bash
-git clone https://github.com/NaorHL1/antigravity-rtl-patch.git
-cd antigravity-rtl-patch
-npm install
-node install.js
+npx github:NaorHL1/antigravity-rtl-patch
 ```
-یا فایل ZIP را از دکمه سبز **"<> Code"** بالا دانلود کنید، استخراج کرده و دستورات بالا را اجرا کنید.
 
-پس از نصب، برنامه را کاملاً ببندید و دوباره باز کنید.
+پس از نصب، برنامه را دوباره باز کنید.
 
 ---
 
