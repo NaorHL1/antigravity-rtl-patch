@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -572,11 +573,36 @@ function writeAsarSafely(targetPath, newBuffer) {
     }
 }
 
-async function patch(targetAsarPath = ASAR_PATH) {
-    const isRestore = process.argv.includes('--restore');
-    console.log(isRestore ? '🔄 Restoring original Antigravity app.asar...' : '🚀 Starting Antigravity 2.0 RTL Patch (Zero-Shift Surgical Mode)...');
+function printHelp() {
+    console.log(`
+Antigravity 2.0 RTL Patcher (v2.0.0)
+Zero-shift surgical Right-to-Left (RTL) support for Antigravity Desktop.
 
-    waitForBackgroundUpdater();
+Usage:
+  npx github:NaorHL1/antigravity-rtl-patch [options]
+  npx antigravity-rtl-patch [options]
+  node install.js [options]
+
+Options:
+  --restore              Restore original unpatched app.asar
+  --status               Check current Antigravity version and RTL patch status
+  --asar-path <path>     Specify custom path to resources/app.asar
+  --help, -h             Show this help message
+`);
+}
+
+async function patch(targetAsarPath = ASAR_PATH) {
+    if (process.argv.includes('--help') || process.argv.includes('-h')) {
+        printHelp();
+        return;
+    }
+
+    const isStatus = process.argv.includes('--status');
+    const isRestore = process.argv.includes('--restore');
+    if (!isStatus) {
+        console.log(isRestore ? '🔄 Restoring original Antigravity app.asar...' : '🚀 Starting Antigravity 2.0 RTL Patch (Zero-Shift Surgical Mode)...');
+        waitForBackgroundUpdater();
+    }
 
     if (!fs.existsSync(targetAsarPath)) {
         console.error('❌ Could not find app.asar at: ' + targetAsarPath);
@@ -612,6 +638,14 @@ async function patch(targetAsarPath = ASAR_PATH) {
     const versionedBackupPath = path.join(BACKUP_DIR, `app.asar.${version}.backup`);
 
     const isCurrentlyPatched = utilsStr.includes(PATCH_START_MARKER) || utilsStr.includes(LEGACY_MARKER);
+
+    if (isStatus) {
+        console.log(`📌 Antigravity Version : v${version}`);
+        console.log(`📂 ASAR Path           : ${targetAsarPath}`);
+        console.log(`✨ RTL Patch Status    : ${isCurrentlyPatched ? 'INSTALLED ✅' : 'NOT INSTALLED ❌'}`);
+        console.log(`📦 Backup Available    : ${fs.existsSync(versionedBackupPath) ? 'YES (' + versionedBackupPath + ')' : 'Self-embedded inside ASAR'}`);
+        return;
+    }
 
     if (!isCurrentlyPatched && !fs.existsSync(versionedBackupPath)) {
         fs.writeFileSync(versionedBackupPath, currentBuf);

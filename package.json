@@ -1,15 +1,39 @@
 {
   "name": "antigravity-rtl-patch",
-  "version": "1.0.0",
-  "description": "A native RTL injection patch for the Antigravity 2.0 Desktop Application",
+  "version": "2.0.0",
+  "description": "Zero-shift surgical Right-to-Left (RTL) injection patch for the Antigravity 2.0 Desktop Application (Windows, macOS, Linux)",
   "main": "install.js",
-  "scripts": {
-    "patch": "node install.js"
+  "bin": {
+    "antigravity-rtl-patch": "./install.js"
   },
-  "keywords": ["antigravity", "rtl", "hebrew", "arabic", "persian", "electron", "patch"],
+  "files": [
+    "install.js",
+    "README.md",
+    "LICENSE",
+    "screenshot.png"
+  ],
+  "scripts": {
+    "patch": "node install.js",
+    "restore": "node install.js --restore",
+    "status": "node install.js --status"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NaorHL1/antigravity-rtl-patch.git"
+  },
+  "keywords": [
+    "antigravity",
+    "rtl",
+    "hebrew",
+    "arabic",
+    "persian",
+    "electron",
+    "patch",
+    "bidi"
+  ],
   "author": "NaorHL1",
   "license": "MIT",
-  "dependencies": {
-    "@electron/asar": "^3.2.0"
+  "engines": {
+    "node": ">=16.0.0"
   }
 }
