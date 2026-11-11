@@ -4,7 +4,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const vm = require('vm');
-const { execSync } = require('child_process');
+const { execSync, spawnSync } = require('child_process');
 
 /**
  * Resolves the platform-appropriate state/backup directory outside Antigravity's install folder
@@ -530,19 +530,20 @@ function sleepMs(ms) {
 function waitForBackgroundUpdater(quiet = false) {
     if (process.platform !== 'win32') return;
     const maxWaitSec = 180;
+    const isRunning = (image) => {
+        // No shell + windowsHide: avoids flashing cmd.exe windows on every poll.
+        const r = spawnSync('tasklist', ['/FI', `IMAGENAME eq ${image}`, '/FO', 'CSV', '/NH'], {
+            encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        if (r.error || r.status !== 0) return false;
+        return (r.stdout || '').includes(image);
+    };
     for (let waited = 0; waited < maxWaitSec; waited += 2) {
-        try {
-            const out = execSync('tasklist /FI "IMAGENAME eq Antigravity-x64.exe" /FO CSV /NH', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-            const outUninstall = execSync('tasklist /FI "IMAGENAME eq Uninstall Antigravity.exe" /FO CSV /NH', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-            const updaterRunning = out.includes('Antigravity-x64.exe') || outUninstall.includes('Uninstall');
-            if (!updaterRunning) return;
-            if (waited === 0 && !quiet) {
-                console.log('⏳ Antigravity is currently finishing an update in the background. Waiting for it to complete safely...');
-            }
-            sleepMs(2000);
-        } catch (_) {
-            return;
+        if (!isRunning('Antigravity-x64.exe') && !isRunning('Uninstall Antigravity.exe')) return;
+        if (waited === 0 && !quiet) {
+            console.log('⏳ Antigravity is currently finishing an update in the background. Waiting for it to complete safely...');
         }
+        sleepMs(2000);
     }
 }
 
@@ -1186,6 +1187,11 @@ async function patch() {
 
     if (isWaitForUpdate || isAutoCheck) {
         try { process.chdir(os.tmpdir()); } catch (_) {}
+        // Antigravity was uninstalled: nothing to patch, so exit instead of polling.
+        if (!fs.existsSync(targetAsarPath) && vscodeExtensions.length === 0) {
+            unregisterAutoPatchAgent(true);
+            return;
+        }
     }
 
     if (isWaitForUpdate) {
